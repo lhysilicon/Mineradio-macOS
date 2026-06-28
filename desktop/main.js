@@ -1378,10 +1378,14 @@ async function createWindow() {
     minWidth: 960,
     minHeight: 540,
     show: false,
-    frame: false,
     fullscreen: false,
-    transparent: true,
-    backgroundColor: '#00000000',
+    // macOS: standard opaque titled window so the native red/yellow/green
+    // traffic lights render (a transparent window can't host them — that combo
+    // caused the open-maximized-can't-restore bug). Windows keeps the original
+    // frameless transparent custom shell unchanged.
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 15 }, transparent: false, backgroundColor: '#070b0e' }
+      : { frame: false, transparent: true, backgroundColor: '#00000000' }),
     hasShadow: true,
     autoHideMenuBar: true,
     title: APP_NAME,

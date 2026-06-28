@@ -38,6 +38,8 @@ body::after,#desktop-window-shell::after{content:none}
 body.desktop-shell{background:transparent}
 body.desktop-shell #desktop-window-shell{display:block;position:fixed;inset:0;overflow:hidden;border-radius:34px;clip-path:inset(0 round 34px);background:transparent;box-shadow:0 24px 80px rgba(0,0,0,.46);transform:translateZ(0)}
 body.desktop-shell.desktop-maximized #desktop-window-shell,body.desktop-shell.desktop-fullscreen #desktop-window-shell,html:fullscreen body.desktop-shell #desktop-window-shell{border-radius:0!important;clip-path:none!important;box-shadow:none!important}
+/* macOS: window is an opaque titled window (native traffic lights); flush the shell to its edges and let macOS round the window so there are no dark corner gaps. */
+html.is-mac body.desktop-shell #desktop-window-shell{border-radius:0;clip-path:none;box-shadow:none}
 body.desktop-shell #desktop-titlebar{position:fixed;z-index:500;top:0;left:0;right:0;height:44px;padding:0 12px 0 18px;display:flex;align-items:center;justify-content:space-between;background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none;-webkit-app-region:drag;pointer-events:none}
 body.desktop-shell #desktop-titlebar::after{content:none}
 .desktop-drag-region{height:100%;flex:1;display:flex;align-items:center;gap:9px;min-width:0;color:rgba(224,250,255,.74);font-size:12px;font-weight:600;letter-spacing:0;text-transform:uppercase;-webkit-app-region:drag;pointer-events:auto}
@@ -47,8 +49,8 @@ body.desktop-shell #desktop-titlebar::after{content:none}
 /* macOS keeps the frameless transparent glass design (no native traffic lights),
    so make the custom minimize / maximize(fullscreen) / close buttons clearly
    visible against the dark visual stage instead of the faint default. */
-html.is-mac .desktop-window-btn{background:rgba(10,16,20,.62);color:rgba(238,250,255,.96);width:40px;height:32px;border:1px solid rgba(255,255,255,.13)}
-html.is-mac .desktop-window-btn svg{width:15px;height:15px;stroke-width:2.2}
+/* macOS: native traffic lights replace the in-titlebar min/max/close, so hide the custom ones (keep the ?/update/DIY app buttons). */
+html.is-mac .desktop-window-btn{display:none}
 .desktop-window-btn{width:38px;height:30px;border:0;border-radius:10px;background:rgba(4,8,10,.42);color:rgba(224,250,255,.72);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .18s,color .18s,transform .18s}
 .desktop-window-btn svg{width:14px;height:14px;stroke:currentColor;stroke-width:2;fill:none}
 .desktop-window-btn:hover{background:rgba(244,210,138,.14);color:#fff1bd;transform:translateY(-1px)}
