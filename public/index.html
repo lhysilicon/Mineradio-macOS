@@ -69,6 +69,14 @@ body.desktop-shell #desktop-titlebar #update-entry::before,
 body.desktop-shell #desktop-titlebar #update-entry::after{display:none}
 body.desktop-shell #desktop-titlebar #visual-guide-btn:hover,
 body.desktop-shell #desktop-titlebar #update-entry:hover{background:rgba(255,83,103,.10);border-color:rgba(255,83,103,.32);color:#fff;transform:translateY(-1px)}
+/* macOS wallpaper-mode entry button: shown only when the native bridge is available. */
+#mac-wallpaper-btn{display:none}
+body.desktop-shell #desktop-titlebar #mac-wallpaper-btn{width:30px;height:30px;border-radius:10px;box-shadow:none;background:rgba(4,8,10,.42);border:1px solid rgba(255,255,255,.08);color:rgba(224,250,255,.70);align-items:center;justify-content:center;-webkit-app-region:no-drag;cursor:pointer}
+body.mac-wallpaper-available #desktop-titlebar #mac-wallpaper-btn{display:flex}
+body.mac-wallpaper-available #t-wallpaperMode{display:none}
+body.desktop-shell #desktop-titlebar #mac-wallpaper-btn:hover{background:rgba(120,200,255,.12);border-color:rgba(120,200,255,.34);color:#fff;transform:translateY(-1px)}
+body.mac-wallpaper-on #desktop-titlebar #mac-wallpaper-btn{background:rgba(120,200,255,.20);border-color:rgba(120,200,255,.46);color:#dff1ff}
+body.mac-wallpaper-on #desktop-titlebar #mac-wallpaper-btn svg{filter:drop-shadow(0 0 4px rgba(120,200,255,.6))}
 body.desktop-shell #search-area{top:-92px}
 body.desktop-shell #search-area.peek{top:34px}
 body.desktop-shell #search-area.stage-mode.peek{top:32px}
@@ -1867,6 +1875,9 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
       </svg>
     </button>
     <button id="diy-mode-btn" class="desktop-mode-btn" type="button" onclick="toggleDiyMode()" title="开启 DIY 玩家模式" aria-label="开启 DIY 玩家模式" aria-pressed="false">DIY</button>
+    <button id="mac-wallpaper-btn" class="icon-btn" type="button" onclick="toggleMacWallpaperFromUi()" title="桌面壁纸模式（⌥⌘W）" aria-label="桌面壁纸模式">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 14l5-4 4 3 3-2 6 5"/><path d="M9 21h6"/></svg>
+    </button>
     <button class="desktop-window-btn" data-window-action="minimize" title="最小化" aria-label="最小化">
       <svg viewBox="0 0 16 16"><path d="M3 8h10"/></svg>
     </button>
@@ -26881,6 +26892,27 @@ function animate() {
   renderer.render(scene, camera);
 }
 animate();
+</script>
+<script>
+// macOS desktop-wallpaper mode: wire the obvious titlebar button + reflect state.
+// Additive + fully guarded; no-ops on non-mac / when the native bridge is unavailable.
+(function setupMacWallpaperUi(){
+  var api = window.desktopWindow;
+  window.toggleMacWallpaperFromUi = function(){
+    if (window.desktopWindow && window.desktopWindow.macWallpaperToggle) window.desktopWindow.macWallpaperToggle();
+  };
+  if (!api || typeof api.macWallpaperState !== 'function') return;
+  function reflect(state){
+    var on = !!(state && state.active);
+    document.body.classList.toggle('mac-wallpaper-on', on);
+    var btn = document.getElementById('mac-wallpaper-btn');
+    if (btn) btn.title = on ? '退出壁纸模式（⌥⌘W）· 前置交互 ⌥⌘B' : '桌面壁纸模式（⌥⌘W）';
+  }
+  api.macWallpaperState().then(function(s){
+    if (s && s.available) { document.body.classList.add('mac-wallpaper-available'); reflect(s); }
+  }).catch(function(){});
+  if (typeof api.onWallpaperModeChange === 'function') api.onWallpaperModeChange(reflect);
+})();
 </script>
 </body>
 </html>

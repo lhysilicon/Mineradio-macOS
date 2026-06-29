@@ -17,6 +17,25 @@ business logic was altered.
   dock-icon re-open (was: blank window from a new port vs. the cached server).
 - `desktop/main.js`: live-wallpaper IPC reports unsupported on non-Windows instead of
   spawning a broken floating panel (the WorkerW desktop re-parent is Windows-only).
+- `desktop/main.js` + `desktop/mac-window-level.js` (new) + `desktop/preload.js`: added a
+  **macOS desktop-wallpaper mode**. The app window sinks to the desktop wallpaper level
+  (behind Finder icons) as a live, animated wallpaper and toggles back to a normal window,
+  via a small koffi FFI bridge that sets the live window's `NSWindow.level` (no
+  destroy/recreate, so playback/login state is preserved). Plash-style toggle: ambient
+  (behind icons, click-through) ⇄ browsing (raised, interactive) ⇄ app window. Controls:
+  a visible wallpaper button in the window title bar, an always-reachable menu-bar tray
+  (enter/exit, browsing toggle, prev/play/next, bring-to-front — usable even while the app
+  is sunk behind the icons), a "壁纸" application-menu submenu, and global hotkeys ⌥⌘W
+  (enter/exit wallpaper) and ⌥⌘B (browsing mode). The window sits one level below the
+  desktop-ICON level (`CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) - 1`): above the
+  system wallpaper picture so it is visible as the wallpaper, below the icons so they stay
+  on top and uncovered — the older `kCGDesktopWindowLevel - 1` renders beneath the system
+  wallpaper on macOS 26 Tahoe and is invisible. macOS-only; the Windows WorkerW path is
+  unchanged. On macOS a window cannot be behind the desktop icons AND receive clicks at the
+  same time (the OS routes desktop clicks to Finder), so full interaction goes through the
+  browsing toggle (or the tray controls, which work in either state). Adds the `koffi`
+  dependency (prebuilt N-API binary, bundled per-arch; the bridge is fail-soft and no-ops
+  if unavailable).
 - `desktop/main.js` + `server.js`: the in-app updater no longer offers/opens a Windows
   `.exe` installer on macOS; installer asset extension is platform-aware.
 - `desktop/main.js`: added a macOS-only role-based application menu (keeps Cmd+C/V/X/A

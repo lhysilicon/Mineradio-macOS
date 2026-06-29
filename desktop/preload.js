@@ -39,6 +39,16 @@ contextBridge.exposeInMainWorld('desktopWindow', {
   },
   setWallpaperMode: (enabled, payload) => ipcRenderer.invoke('mineradio-wallpaper-set-enabled', !!enabled, payload || {}),
   updateWallpaperMode: (payload) => ipcRenderer.invoke('mineradio-wallpaper-update', payload || {}),
+  // macOS desktop-wallpaper mode (sink the app to desktop level; Plash-style toggle).
+  macWallpaperState: () => ipcRenderer.invoke('mineradio-mac-wallpaper-state'),
+  macWallpaperToggle: () => ipcRenderer.invoke('mineradio-mac-wallpaper-toggle'),
+  macWallpaperSet: (enabled) => ipcRenderer.invoke('mineradio-mac-wallpaper-set', !!enabled),
+  macBrowsingToggle: () => ipcRenderer.invoke('mineradio-mac-browsing-toggle'),
+  onWallpaperModeChange: (callback) => {
+    const listener = (_event, state) => callback(state || {});
+    ipcRenderer.on('mineradio-wallpaper-mode', listener);
+    return () => ipcRenderer.removeListener('mineradio-wallpaper-mode', listener);
+  },
   onStateChange: (callback) => {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('desktop-window-state', listener);

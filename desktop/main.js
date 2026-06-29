@@ -1,8 +1,9 @@
-const { app, BrowserWindow, Menu, ipcMain, shell, screen, session, globalShortcut, dialog } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, screen, session, globalShortcut, dialog } = require('electron');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
 const { execFile, spawn } = require('child_process');
+const macWindowLevel = require('./mac-window-level');
 
 let mainWindow = null;
 let localServer = null;
@@ -19,6 +20,11 @@ let desktopLyricsHotBounds = null;
 let desktopLyricsLastMiddleAt = 0;
 let wallpaperWindow = null;
 let wallpaperState = {};
+// macOS desktop-wallpaper mode (sink the LIVE main window to desktop level).
+let macWallpaperActive = false;
+let macBrowsingActive = false;
+let macWallpaperSaved = null;
+let macTray = null;
 let htmlFullscreenActive = false;
 let windowFullscreenActive = false;
 let mainWindowStateTimer = null;
@@ -1095,6 +1101,283 @@ function closeWallpaperWindow() {
   wallpaperWindow = null;
 }
 
+// ---------------------------------------------------------------------------
+// macOS desktop-wallpaper mode.
+// behind-icons + interactive are mutually exclusive on macOS (Finder owns desktop
+// hit-testing), so this is a Plash-style toggle implemented on the LIVE main window
+// via mac-window-level FFI (no destroy/recreate -> renderer/audio/login state kept):
+//   App mode  <--(Alt+Cmd+W)-->  Wallpaper(ambient, behind icons, click-through)
+//                                      <--(Alt+Cmd+B)-->  Browsing(raised, interactive)
+// All FFI is fail-soft: if the bridge is unavailable we stay in app mode + notify.
+// The Windows WorkerW path (attachWallpaperToWorkerW / wallpaperWindow) is untouched.
+// ---------------------------------------------------------------------------
+
+function notifyMac(msg) {
+  if (process.platform !== 'darwin') return;
+  try {
+    execFile('/usr/bin/osascript', ['-e',
+      `display notification "${String(msg).replace(/["\\]/g, '\\$&')}" with title "Mineradio 壁纸"`]);
+  } catch (e) { /* notifications are best-effort */ }
+}
+
+function macWallpaperAvailable() {
+  return process.platform === 'darwin' && macWindowLevel && macWindowLevel.isAvailable();
+}
+
+function applyMacAmbientLevel() {
+  // Ambient: behind desktop icons, click-through, present on every Space.
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try { mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreenUI: true }); } catch (e) {}
+  macWindowLevel.setLevel(mainWindow, macWindowLevel.desktopLevel());
+  try { mainWindow.setIgnoreMouseEvents(true, { forward: true }); } catch (e) {}
+}
+
+function applyMacBrowsingLevel() {
+  // Browsing: raise to normal level, take focus, accept clicks (covers icons).
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  macWindowLevel.setLevel(mainWindow, macWindowLevel.normalLevel());
+  try { mainWindow.setVisibleOnAllWorkspaces(false); } catch (e) {}
+  try { mainWindow.setIgnoreMouseEvents(false); } catch (e) {}
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function sendMacWallpaperModeState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.webContents.send('mineradio-wallpaper-mode', {
+      active: macWallpaperActive, browsing: macBrowsingActive,
+    });
+  } catch (e) {}
+}
+
+function enterMacWallpaperMode() {
+  if (!macWallpaperAvailable() || !mainWindow || mainWindow.isDestroyed()) {
+    notifyMac('壁纸模式不可用（原生窗口层级接口未加载）');
+    return false;
+  }
+  if (macWallpaperActive) return true;
+  try {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    macWallpaperSaved = {
+      bounds: mainWindow.getBounds(),
+      resizable: mainWindow.isResizable(),
+      movable: mainWindow.isMovable(),
+    };
+    // Mark active BEFORE the mutating calls so a mid-setup throw is rolled back by
+    // exitMacWallpaperMode (which early-returns when neither flag is set).
+    macWallpaperActive = true;
+    macBrowsingActive = false;
+    if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    try { mainWindow.setWindowButtonVisibility(false); } catch (e) {} // hide traffic lights
+    mainWindow.setBounds(screen.getPrimaryDisplay().bounds, false);
+    mainWindow.setResizable(false);
+    mainWindow.setMovable(false);
+    applyMacAmbientLevel();
+    updateMacWallpaperMenu();
+    sendMacWallpaperModeState();
+    return true;
+  } catch (e) {
+    console.warn('enterMacWallpaperMode failed:', e.message);
+    try { exitMacWallpaperMode(); } catch (_) {}
+    notifyMac('进入壁纸模式失败: ' + e.message);
+    return false;
+  }
+}
+
+function exitMacWallpaperMode() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    macWallpaperActive = false; macBrowsingActive = false; macWallpaperSaved = null;
+    return;
+  }
+  if (!macWallpaperActive && !macBrowsingActive) return;
+  try {
+    if (macWindowLevel) macWindowLevel.setLevel(mainWindow, macWindowLevel.normalLevel());
+    try { mainWindow.setVisibleOnAllWorkspaces(false); } catch (e) {}
+    try { mainWindow.setIgnoreMouseEvents(false); } catch (e) {}
+    try { mainWindow.setWindowButtonVisibility(true); } catch (e) {}
+    if (macWallpaperSaved) {
+      mainWindow.setResizable(macWallpaperSaved.resizable);
+      mainWindow.setMovable(macWallpaperSaved.movable);
+      if (macWallpaperSaved.bounds) mainWindow.setBounds(macWallpaperSaved.bounds, false);
+    } else {
+      mainWindow.setResizable(true);
+      mainWindow.setMovable(true);
+    }
+    mainWindow.show();
+    mainWindow.focus();
+  } catch (e) {
+    console.warn('exitMacWallpaperMode restore issue:', e.message);
+  } finally {
+    macWallpaperActive = false;
+    macBrowsingActive = false;
+    macWallpaperSaved = null;
+    updateMacWallpaperMenu();
+    sendMacWallpaperModeState();
+  }
+}
+
+function setMacBrowsingMode(on) {
+  if (!macWallpaperActive) return false;
+  macBrowsingActive = !!on;
+  if (macBrowsingActive) applyMacBrowsingLevel();
+  else applyMacAmbientLevel();
+  updateMacWallpaperMenu();
+  sendMacWallpaperModeState();
+  return true;
+}
+
+function toggleMacWallpaperMode() {
+  if (macWallpaperActive) exitMacWallpaperMode();
+  else enterMacWallpaperMode();
+}
+
+function toggleMacBrowsingMode() {
+  if (!macWallpaperActive) { notifyMac('请先进入壁纸模式 (⌥⌘W)'); return; }
+  setMacBrowsingMode(!macBrowsingActive);
+}
+
+function buildMacAppMenu() {
+  const wallpaperSubmenu = {
+    label: '壁纸',
+    submenu: [
+      {
+        label: macWallpaperActive ? '退出壁纸模式' : '进入壁纸模式',
+        accelerator: 'Alt+Cmd+W',
+        enabled: macWallpaperAvailable(),
+        click: () => toggleMacWallpaperMode(),
+      },
+      {
+        label: '浏览模式（可交互）',
+        type: 'checkbox',
+        checked: macBrowsingActive,
+        enabled: macWallpaperActive,
+        accelerator: 'Alt+Cmd+B',
+        click: () => toggleMacBrowsingMode(),
+      },
+    ],
+  };
+  return Menu.buildFromTemplate([
+    { role: 'appMenu' },
+    { role: 'editMenu' },
+    wallpaperSubmenu,
+    { role: 'windowMenu' },
+  ]);
+}
+
+function updateMacWallpaperMenu() {
+  if (process.platform !== 'darwin') return;
+  try { Menu.setApplicationMenu(buildMacAppMenu()); } catch (e) {}
+  updateMacTray();
+}
+
+function registerMacWallpaperShortcuts() {
+  if (process.platform !== 'darwin') return;
+  // Must be GLOBAL: in ambient mode the desktop-level window can't take key events,
+  // so a focused-only menu accelerator would never fire there.
+  try { globalShortcut.register('Alt+Cmd+W', () => toggleMacWallpaperMode()); } catch (e) {}
+  try { globalShortcut.register('Alt+Cmd+B', () => toggleMacBrowsingMode()); } catch (e) {}
+}
+
+// Menu-bar tray: always reachable even when the app is sunk behind the icons, so the
+// user can toggle wallpaper / browsing, skip tracks, and bring the app forward without
+// needing to click the (non-clickable) wallpaper. This is the "obvious, always-visible"
+// control for wallpaper mode.
+function buildMacTrayMenu() {
+  return Menu.buildFromTemplate([
+    { label: macWallpaperActive ? '退出壁纸模式' : '进入壁纸模式', accelerator: 'Alt+Cmd+W',
+      enabled: macWallpaperAvailable() || macWallpaperActive, click: () => toggleMacWallpaperMode() },
+    { label: '浏览模式（前置 · 可完整操作）', type: 'checkbox', checked: macBrowsingActive,
+      enabled: macWallpaperActive, accelerator: 'Alt+Cmd+B', click: () => toggleMacBrowsingMode() },
+    { type: 'separator' },
+    { label: '上一首', click: () => sendGlobalHotkeyAction('prevTrack') },
+    { label: '播放 / 暂停', click: () => sendGlobalHotkeyAction('togglePlay') },
+    { label: '下一首', click: () => sendGlobalHotkeyAction('nextTrack') },
+    { type: 'separator' },
+    { label: '前置主窗口（完整操作）', click: () => { if (macWallpaperActive) setMacBrowsingMode(true); else focusMainWindow(); } },
+    { label: '退出 Mineradio', role: 'quit' },
+  ]);
+}
+
+function updateMacTray() {
+  if (process.platform !== 'darwin' || !macTray || macTray.isDestroyed()) return;
+  try {
+    macTray.setContextMenu(buildMacTrayMenu());
+    macTray.setToolTip(macWallpaperActive ? 'Mineradio · 壁纸模式' : 'Mineradio');
+  } catch (e) {}
+}
+
+function createMacTray() {
+  if (process.platform !== 'darwin' || macTray) return;
+  try {
+    const img = nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'tray-icon.png'));
+    macTray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
+    macTray.setToolTip('Mineradio');
+    updateMacTray();
+  } catch (e) { console.warn('tray init failed:', e && e.message); }
+}
+
+// Env-guarded integration self-test (no production impact). Exercises the REAL
+// enter/browsing/exit code path and asserts NSWindow.level transitions + capturePage.
+async function runMacWallpaperSelfTest() {
+  const out = process.env.MINERADIO_WALLPAPER_SELFTEST_OUT || '/tmp/mineradio-wallpaper-selftest.json';
+  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 'selftest hard timeout'); } catch (e) {} process.exit(3); }, 25000);
+  const r = { steps: [] };
+  const log = (k, v) => r.steps.push([k, v]);
+  try {
+    log('available', macWallpaperAvailable());
+    log('desktopLevel', macWindowLevel.desktopLevel());
+    log('levelInitial', macWindowLevel.getLevel(mainWindow));
+    enterMacWallpaperMode();
+    await new Promise((res) => setTimeout(res, 350));
+    r.levelAmbient = macWindowLevel.getLevel(mainWindow);
+    r.activeAfterEnter = macWallpaperActive;
+    // capturePage proves the window still renders while sunk (works even when locked)
+    try {
+      const img = await mainWindow.webContents.capturePage();
+      const png = img.toPNG();
+      require('fs').writeFileSync(out.replace(/\.json$/, '') + '-ambient.png', png);
+      r.captureBytes = png.length;
+    } catch (e) { r.captureError = e.message; }
+    setMacBrowsingMode(true);
+    await new Promise((res) => setTimeout(res, 250));
+    r.levelBrowsing = macWindowLevel.getLevel(mainWindow);
+    r.browsingAfter = macBrowsingActive;
+    exitMacWallpaperMode();
+    await new Promise((res) => setTimeout(res, 250));
+    r.levelRestored = macWindowLevel.getLevel(mainWindow);
+    r.activeAfterExit = macWallpaperActive;
+    r.PASS = r.levelAmbient === macWindowLevel.desktopLevel()
+      && r.levelBrowsing === 0
+      && r.levelRestored === 0
+      && r.activeAfterEnter === true
+      && r.activeAfterExit === false
+      && (r.captureBytes || 0) > 2000;
+  } catch (e) {
+    r.error = e.message; r.stack = e.stack; r.PASS = false;
+  }
+  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
+  setTimeout(() => app.quit(), 200);
+}
+
+// Env-guarded ON-SCREEN hold test (needs an UNLOCKED screen). Enters ambient
+// wallpaper mode and holds, then browsing, then exits — so an external script can
+// screencapture the real desktop and confirm the app sits behind the Finder icons.
+async function runMacWallpaperHoldTest() {
+  const ambientHoldMs = parseInt(process.env.MINERADIO_WALLPAPER_HOLD_AMBIENT_MS || '6000', 10);
+  const browseHoldMs = parseInt(process.env.MINERADIO_WALLPAPER_HOLD_BROWSE_MS || '5000', 10);
+  try {
+    enterMacWallpaperMode();
+    await new Promise((res) => setTimeout(res, ambientHoldMs));
+    setMacBrowsingMode(true);
+    await new Promise((res) => setTimeout(res, browseHoldMs));
+    exitMacWallpaperMode();
+    await new Promise((res) => setTimeout(res, 800));
+  } catch (e) { console.warn('holdtest error:', e.message); }
+  if (process.env.MINERADIO_WALLPAPER_HOLD_QUIT !== '0') setTimeout(() => app.quit(), 200);
+}
+
 function closeOverlayWindows() {
   closeDesktopLyricsWindow();
   closeWallpaperWindow();
@@ -1330,6 +1613,25 @@ ipcMain.handle('mineradio-wallpaper-update', async (_event, payload) => {
   }
 });
 
+// macOS desktop-wallpaper-mode control surface (renderer-facing). darwin-only behavior;
+// returns available:false elsewhere so the UI can hide/disable the control.
+ipcMain.handle('mineradio-mac-wallpaper-state', () => ({
+  ok: true, platform: process.platform, available: macWallpaperAvailable(),
+  active: macWallpaperActive, browsing: macBrowsingActive,
+}));
+ipcMain.handle('mineradio-mac-wallpaper-toggle', () => {
+  toggleMacWallpaperMode();
+  return { ok: true, available: macWallpaperAvailable(), active: macWallpaperActive, browsing: macBrowsingActive };
+});
+ipcMain.handle('mineradio-mac-wallpaper-set', (_e, enabled) => {
+  if (enabled) enterMacWallpaperMode(); else exitMacWallpaperMode();
+  return { ok: true, available: macWallpaperAvailable(), active: macWallpaperActive, browsing: macBrowsingActive };
+});
+ipcMain.handle('mineradio-mac-browsing-toggle', () => {
+  toggleMacBrowsingMode();
+  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive };
+});
+
 async function createWindow() {
   htmlFullscreenActive = false;
   windowFullscreenActive = false;
@@ -1436,6 +1738,12 @@ async function createWindow() {
       mainWindowStateTimer = null;
     }
     closeOverlayWindows();
+    // If the window is closed mid-wallpaper-mode, clear the mac wallpaper state so a
+    // dock-reopened fresh (normal) window doesn't inherit stale active/browsing flags.
+    macWallpaperActive = false;
+    macBrowsingActive = false;
+    macWallpaperSaved = null;
+    updateMacWallpaperMenu();
     mainWindow = null;
   });
   mainWindow.on('enter-full-screen', () => {
@@ -1478,11 +1786,9 @@ if (!gotSingleInstanceLock) {
     // state). On Windows the frameless window keeps Electron's default (auto-hidden) menu,
     // so leave it untouched there.
     if (process.platform === 'darwin') {
-      Menu.setApplicationMenu(Menu.buildFromTemplate([
-        { role: 'appMenu' },
-        { role: 'editMenu' },
-        { role: 'windowMenu' },
-      ]));
+      createMacTray();
+      updateMacWallpaperMenu();
+      registerMacWallpaperShortcuts();
     }
     screen.on('display-metrics-changed', () => {
       positionDesktopLyricsWindow();
@@ -1492,10 +1798,13 @@ if (!gotSingleInstanceLock) {
     screen.on('display-added', () => scheduleWindowStateSend(mainWindow));
     screen.on('display-removed', () => scheduleWindowStateSend(mainWindow));
     await createWindow();
+    if (process.env.MINERADIO_WALLPAPER_SELFTEST === '1') runMacWallpaperSelfTest();
+    else if (process.env.MINERADIO_WALLPAPER_HOLDTEST === '1') runMacWallpaperHoldTest();
   });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    else if (macWallpaperActive && !macBrowsingActive) setMacBrowsingMode(true);
     else focusMainWindow();
   });
 
@@ -1504,7 +1813,9 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('before-quit', () => {
+    try { exitMacWallpaperMode(); } catch (e) {}
     unregisterMineradioGlobalHotkeys();
+    try { globalShortcut.unregisterAll(); } catch (e) {}
     closeOverlayWindows();
     if (localServer && localServer.close) localServer.close();
   });
