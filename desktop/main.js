@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, screen, session, globalShortcut, dialog } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, screen, session, globalShortcut, dialog, powerMonitor } = require('electron');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
@@ -25,6 +25,21 @@ let macWallpaperActive = false;
 let macBrowsingActive = false;
 let macWallpaperSaved = null;
 let macTray = null;
+// Always-available mini control pill (transport + mode toggle) that floats over the
+// wallpaper without stealing key focus. Reuses the proven desktopLyricsWindow recipe
+// (focusable:false + showInactive + screen-saver level + all-spaces). Exists ONLY while
+// macWallpaperActive, so it never clutters normal app use.
+let macWallpaperHud = null;
+// Energy controller: when the wallpaper is provably unseen (screen locked / system
+// suspended) we tell the renderer to idle (it drops to a 4x4 surface via its existing
+// deep-background power path). Occlusion-by-fullscreen-app was MEASURED unreliable for an
+// all-spaces/desktop-level window (occlusionState stays "visible"), so we only act on the
+// signals that are reliable. lastWallpaperPowerState is exposed for the self-test.
+let macWallpaperPowerIdle = false;
+let lastWallpaperPowerState = null;
+// Last now-playing pushed by the renderer; cached so a freshly-created HUD shows the
+// current track immediately instead of waiting for the next renderer push.
+let lastMacHudNowPlaying = null;
 let htmlFullscreenActive = false;
 let windowFullscreenActive = false;
 let mainWindowStateTimer = null;
@@ -1126,8 +1141,13 @@ function macWallpaperAvailable() {
 
 function applyMacAmbientLevel() {
   // Ambient: behind desktop icons, click-through, present on every Space.
+  // NOTE: the option key is `visibleOnFullScreen` (Electron); the old
+  // `visibleOnFullScreenUI` was a silent no-op (cf. desktop-lyrics at :952 which
+  // already used the correct key). setVisibleOnAllWorkspaces sets the all-spaces +
+  // FullScreenAuxiliary collection bits for us, so we do NOT also call the koffi
+  // setCollectionBehavior(81) here — 81 lacks FullScreenAuxiliary and would clobber it.
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  try { mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreenUI: true }); } catch (e) {}
+  try { mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (e) {}
   macWindowLevel.setLevel(mainWindow, macWindowLevel.desktopLevel());
   try { mainWindow.setIgnoreMouseEvents(true, { forward: true }); } catch (e) {}
 }
@@ -1143,12 +1163,124 @@ function applyMacBrowsingLevel() {
 }
 
 function sendMacWallpaperModeState() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('mineradio-wallpaper-mode', {
+        active: macWallpaperActive, browsing: macBrowsingActive,
+      });
+    } catch (e) {}
+  }
+  sendMacHudState();
+}
+
+// --- Mini control HUD (transport pill) ---------------------------------------
+// A small always-reachable control surface that floats over the wallpaper. Built on
+// the desktop-lyrics recipe so it receives clicks on its buttons WITHOUT taking key
+// focus from the user's frontmost app (focusable:false + showInactive). It is pure
+// control: buttons fire the same sendGlobalHotkeyAction path the tray uses, so no new
+// renderer plumbing is needed.
+function positionMacWallpaperHud() {
+  if (!macWallpaperHud || macWallpaperHud.isDestroyed()) return;
+  const bounds = screen.getPrimaryDisplay().bounds;
+  const b = macWallpaperHud.getBounds();
+  const x = Math.round(bounds.x + (bounds.width - b.width) / 2);
+  const y = Math.round(bounds.y + bounds.height - b.height - 56);
+  macWallpaperHud.setBounds({ x, y, width: b.width, height: b.height }, false);
+}
+
+function sendMacHudState() {
+  if (!macWallpaperHud || macWallpaperHud.isDestroyed()) return;
   try {
-    mainWindow.webContents.send('mineradio-wallpaper-mode', {
+    macWallpaperHud.webContents.send('mineradio-wallpaper-hud-state', {
       active: macWallpaperActive, browsing: macBrowsingActive,
     });
   } catch (e) {}
+}
+
+function createMacWallpaperHud() {
+  if (process.platform !== 'darwin') return null;
+  if (macWallpaperHud && !macWallpaperHud.isDestroyed()) {
+    positionMacWallpaperHud();
+    sendMacHudState();
+    return macWallpaperHud;
+  }
+  macWallpaperHud = new BrowserWindow({
+    width: 420,
+    height: 64,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    resizable: false,
+    movable: true,
+    focusable: false,   // never steal key focus from the frontmost app
+    skipTaskbar: true,
+    show: false,
+    title: 'Mineradio Wallpaper Controls',
+    webPreferences: {
+      preload: path.join(__dirname, 'overlay-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: false,
+    },
+  });
+  try {
+    macWallpaperHud.setAlwaysOnTop(true, 'screen-saver');
+    macWallpaperHud.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } catch (e) {
+    console.warn('Wallpaper HUD topmost setup skipped:', e && e.message);
+  }
+  // Buttons must be clickable; the pill stays non-focusable so clicking it does not
+  // activate Mineradio over whatever app the user is in.
+  try { macWallpaperHud.setIgnoreMouseEvents(false); } catch (e) {}
+  positionMacWallpaperHud();
+  macWallpaperHud.once('ready-to-show', () => {
+    if (!macWallpaperHud || macWallpaperHud.isDestroyed()) return;
+    macWallpaperHud.showInactive();
+    sendMacHudState();
+  });
+  macWallpaperHud.webContents.once('did-finish-load', () => {
+    sendMacHudState();
+    if (lastMacHudNowPlaying && macWallpaperHud && !macWallpaperHud.isDestroyed()) {
+      try { macWallpaperHud.webContents.send('mineradio-wallpaper-hud-nowplaying', lastMacHudNowPlaying); } catch (e) {}
+    }
+  });
+  macWallpaperHud.on('closed', () => { macWallpaperHud = null; });
+  macWallpaperHud.loadURL(overlayUrl('wallpaper-hud.html')).catch((e) => console.warn('Wallpaper HUD load failed:', e && e.message));
+  return macWallpaperHud;
+}
+
+function destroyMacWallpaperHud() {
+  if (!macWallpaperHud) return;
+  try { if (!macWallpaperHud.isDestroyed()) macWallpaperHud.close(); } catch (e) {}
+  macWallpaperHud = null;
+}
+
+// Tell the renderer to idle (true) or resume (false) the wallpaper visualizer. The
+// renderer ORs this into isDeepBackgroundMode() → applyRendererPowerMode() shrinks the
+// WebGL surface to 4x4 ≈ no GPU work. Safe: the flag defaults false, so normal app use is
+// untouched. Always allowed to CLEAR (false); SET (true) is only meaningful in wallpaper
+// mode (the power-event handlers gate on macWallpaperActive).
+function setWallpaperPowerIdle(on, reason) {
+  on = !!on;
+  macWallpaperPowerIdle = on;
+  lastWallpaperPowerState = { idle: on, reason: reason || '' };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('mineradio-wallpaper-power', { idle: on, reason: reason || '' }); } catch (e) {}
+  }
+}
+
+function registerMacWallpaperPowerSignals() {
+  if (process.platform !== 'darwin') return;
+  // "Provably unseen" → idle. Only while in wallpaper mode (otherwise the normal window's
+  // own visibility/minimize logic already governs throttling).
+  const idleIfWallpaper = (reason) => () => { if (macWallpaperActive) setWallpaperPowerIdle(true, reason); };
+  const resume = (reason) => () => setWallpaperPowerIdle(false, reason);
+  try { powerMonitor.on('lock-screen', idleIfWallpaper('lock-screen')); } catch (e) {}
+  try { powerMonitor.on('unlock-screen', resume('unlock-screen')); } catch (e) {}
+  try { powerMonitor.on('suspend', idleIfWallpaper('suspend')); } catch (e) {}
+  try { powerMonitor.on('resume', resume('resume')); } catch (e) {}
 }
 
 function enterMacWallpaperMode() {
@@ -1176,6 +1308,7 @@ function enterMacWallpaperMode() {
     mainWindow.setMovable(false);
     applyMacAmbientLevel();
     createMacTray(); // menu-bar control appears only while in wallpaper mode
+    createMacWallpaperHud(); // floating transport pill over the wallpaper
     updateMacWallpaperMenu();
     sendMacWallpaperModeState();
     return true;
@@ -1211,10 +1344,12 @@ function exitMacWallpaperMode() {
   } catch (e) {
     console.warn('exitMacWallpaperMode restore issue:', e.message);
   } finally {
+    setWallpaperPowerIdle(false, 'exit'); // clear any idle so the restored window renders
     macWallpaperActive = false;
     macBrowsingActive = false;
     macWallpaperSaved = null;
     destroyMacTray(); // back to a normal window → remove the menu-bar icon
+    destroyMacWallpaperHud(); // remove the floating control pill
     updateMacWallpaperMenu();
     sendMacWallpaperModeState();
   }
@@ -1352,20 +1487,66 @@ async function runMacWallpaperSelfTest() {
       require('fs').writeFileSync(out.replace(/\.json$/, '') + '-ambient.png', png);
       r.captureBytes = png.length;
     } catch (e) { r.captureError = e.message; }
+    // --- Control HUD assertions (Round 1): created on enter, non-activating, raised. ---
+    const hudLive = () => !!(macWallpaperHud && !macWallpaperHud.isDestroyed());
+    r.hudCreated = hudLive();
+    r.hudFocusable = hudLive() ? macWallpaperHud.isFocusable() : null;
+    r.hudLevel = hudLive() ? macWindowLevel.getLevel(macWallpaperHud) : null;
+    try {
+      if (hudLive()) {
+        const himg = await macWallpaperHud.webContents.capturePage();
+        const hpng = himg.toPNG();
+        require('fs').writeFileSync(out.replace(/\.json$/, '') + '-hud.png', hpng);
+        r.hudCaptureBytes = hpng.length;
+      }
+    } catch (e) { r.hudCaptureError = e.message; }
+    // --- Energy controller (Round 2): main idle signal → renderer enters deep (4x4) path. ---
+    const readDeep = async () => {
+      try { return await mainWindow.webContents.executeJavaScript('(window.__mineradioPerfSnapshot ? !!__mineradioPerfSnapshot().deepSleep : null)'); }
+      catch (e) { return 'err:' + e.message; }
+    };
+    r.rendererDeepAmbient = await readDeep();
+    setWallpaperPowerIdle(true, 'selftest');
+    await new Promise((res) => setTimeout(res, 320));
+    r.powerIdleBroadcast = !!(lastWallpaperPowerState && lastWallpaperPowerState.idle === true);
+    r.rendererDeepWhenIdle = await readDeep();
+    setWallpaperPowerIdle(false, 'selftest');
+    await new Promise((res) => setTimeout(res, 320));
+    r.rendererDeepAfterRestore = await readDeep();
+    // --- Now-playing relay (Round 2): main-window renderer → main → HUD pill ---
+    try {
+      await mainWindow.webContents.executeJavaScript("window.desktopWindow.macHudNowPlaying({title:'SelfTest Track', artist:'Tester', playing:true})");
+      await new Promise((res) => setTimeout(res, 280));
+      r.hudNowPlaying = (macWallpaperHud && !macWallpaperHud.isDestroyed())
+        ? await macWallpaperHud.webContents.executeJavaScript('(window.__hudNowPlaying || null)')
+        : null;
+      r.hudNowPlayingOk = !!(r.hudNowPlaying && r.hudNowPlaying.title === 'SelfTest Track' && r.hudNowPlaying.playing === true);
+    } catch (e) { r.hudNowPlayingErr = e.message; }
     setMacBrowsingMode(true);
     await new Promise((res) => setTimeout(res, 250));
     r.levelBrowsing = macWindowLevel.getLevel(mainWindow);
     r.browsingAfter = macBrowsingActive;
+    r.hudLevelBrowsing = hudLive() ? macWindowLevel.getLevel(macWallpaperHud) : null;
     exitMacWallpaperMode();
     await new Promise((res) => setTimeout(res, 250));
     r.levelRestored = macWindowLevel.getLevel(mainWindow);
     r.activeAfterExit = macWallpaperActive;
+    r.hudDestroyedAfterExit = !hudLive();
     r.PASS = r.levelAmbient === macWindowLevel.desktopLevel()
       && r.levelBrowsing === 0
       && r.levelRestored === 0
       && r.activeAfterEnter === true
       && r.activeAfterExit === false
-      && (r.captureBytes || 0) > 2000;
+      && (r.captureBytes || 0) > 2000
+      && r.hudCreated === true
+      && r.hudFocusable === false
+      && (r.hudLevel || 0) > 0
+      && r.hudDestroyedAfterExit === true
+      && r.rendererDeepAmbient === false
+      && r.powerIdleBroadcast === true
+      && r.rendererDeepWhenIdle === true
+      && r.rendererDeepAfterRestore === false
+      && r.hudNowPlayingOk === true;
   } catch (e) {
     r.error = e.message; r.stack = e.stack; r.PASS = false;
   }
@@ -1388,6 +1569,45 @@ async function runMacWallpaperHoldTest() {
     await new Promise((res) => setTimeout(res, 800));
   } catch (e) { console.warn('holdtest error:', e.message); }
   if (process.env.MINERADIO_WALLPAPER_HOLD_QUIT !== '0') setTimeout(() => app.quit(), 200);
+}
+
+// Env-guarded MEASUREMENT (no production impact): does AppKit report a reliable
+// occlusionState for the all-spaces / desktop-level wallpaper window when it is fully
+// covered? This is the linchpin open question for the energy controller — measure
+// before building it. Enters ambient, reads occlusion, covers the screen with an
+// opaque normal-level window, re-reads, uncovers, re-reads; writes a verdict JSON.
+async function runMacOcclusionProbe() {
+  const out = process.env.MINERADIO_OCCLUSION_OUT || '/tmp/mineradio-occlusion-probe.json';
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 'occlusion probe timeout'); } catch (e) {} process.exit(3); }, 20000);
+  const r = {};
+  let cover = null;
+  try {
+    enterMacWallpaperMode();
+    await sleep(600);
+    r.ambientLevel = macWindowLevel.getLevel(mainWindow);
+    r.occ_before = macWindowLevel.getOcclusionState(mainWindow);
+    r.visible_before = macWindowLevel.isVisibleByOcclusion(mainWindow);
+    const b = screen.getPrimaryDisplay().bounds;
+    cover = new BrowserWindow({ x: b.x, y: b.y, width: b.width, height: b.height, frame: false, backgroundColor: '#101010', hasShadow: false, skipTaskbar: true, show: false });
+    cover.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height }, false);
+    cover.show();
+    cover.focus();
+    await sleep(1100);
+    r.occ_covered = macWindowLevel.getOcclusionState(mainWindow);
+    r.visible_covered = macWindowLevel.isVisibleByOcclusion(mainWindow);
+    if (cover && !cover.isDestroyed()) cover.close();
+    cover = null;
+    await sleep(800);
+    r.occ_after = macWindowLevel.getOcclusionState(mainWindow);
+    r.visible_after = macWindowLevel.isVisibleByOcclusion(mainWindow);
+    r.RELIABLE = (r.visible_before === true && r.visible_covered === false && r.visible_after === true);
+  } catch (e) {
+    r.error = e.message; r.stack = e.stack;
+  }
+  try { if (cover && !cover.isDestroyed()) cover.close(); } catch (e) {}
+  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
+  setTimeout(() => app.quit(), 200);
 }
 
 function closeOverlayWindows() {
@@ -1643,6 +1863,33 @@ ipcMain.handle('mineradio-mac-browsing-toggle', () => {
   toggleMacBrowsingMode();
   return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive };
 });
+// Wallpaper control-pill (HUD) surface. Transport actions reuse the same global-hotkey
+// path the tray uses; mode toggles reuse the existing wallpaper functions.
+const HUD_TRANSPORT_ACTIONS = new Set(['prevTrack', 'togglePlay', 'nextTrack']);
+ipcMain.handle('mineradio-wallpaper-hud-action', (_e, action) => {
+  const name = String(action || '');
+  if (!HUD_TRANSPORT_ACTIONS.has(name)) return { ok: false, error: 'UNKNOWN_HUD_ACTION' };
+  sendGlobalHotkeyAction(name);
+  return { ok: true };
+});
+ipcMain.handle('mineradio-wallpaper-hud-browsing-toggle', () => {
+  toggleMacBrowsingMode();
+  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive };
+});
+ipcMain.handle('mineradio-wallpaper-hud-exit', () => {
+  exitMacWallpaperMode();
+  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive };
+});
+// Now-playing relay: main-window renderer → HUD pill (title + play/pause state).
+ipcMain.handle('mineradio-mac-hud-nowplaying', (_e, payload) => {
+  lastMacHudNowPlaying = (payload && typeof payload === 'object') ? {
+    title: String(payload.title || ''), artist: String(payload.artist || ''), playing: !!payload.playing,
+  } : null;
+  if (macWallpaperHud && !macWallpaperHud.isDestroyed() && lastMacHudNowPlaying) {
+    try { macWallpaperHud.webContents.send('mineradio-wallpaper-hud-nowplaying', lastMacHudNowPlaying); } catch (e) {}
+  }
+  return { ok: true };
+});
 
 async function createWindow() {
   htmlFullscreenActive = false;
@@ -1723,9 +1970,15 @@ async function createWindow() {
   });
 
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.type === 'keyDown' && (input.key === 'Escape' || input.code === 'Escape') && mainWindow.isFullScreen()) {
+    const isEsc = input.type === 'keyDown' && (input.key === 'Escape' || input.code === 'Escape');
+    if (isEsc && mainWindow.isFullScreen()) {
       event.preventDefault();
       exitFullscreenToWindow(mainWindow);
+    } else if (isEsc && macWallpaperActive && macBrowsingActive) {
+      // Browsing → sink back to ambient so the user is never "stuck" in the raised,
+      // focus-holding interactive state (Esc is the natural "drop it back" gesture).
+      event.preventDefault();
+      setMacBrowsingMode(false);
     }
   });
 
@@ -1756,6 +2009,7 @@ async function createWindow() {
     macBrowsingActive = false;
     macWallpaperSaved = null;
     destroyMacTray(); // don't leave an orphaned menu-bar icon if closed mid-wallpaper-mode
+    destroyMacWallpaperHud(); // don't leave an orphaned control pill
     updateMacWallpaperMenu();
     mainWindow = null;
   });
@@ -1802,10 +2056,19 @@ if (!gotSingleInstanceLock) {
       // No tray at startup — it is created on entering wallpaper mode and destroyed on exit.
       updateMacWallpaperMenu();
       registerMacWallpaperShortcuts();
+      registerMacWallpaperPowerSignals();
     }
     screen.on('display-metrics-changed', () => {
       positionDesktopLyricsWindow();
       positionWallpaperWindow();
+      // Keep the macOS wallpaper full-bleed on the primary display and re-assert its
+      // window level after a resolution / display-arrangement change (the level can be
+      // dropped by the WindowServer on such events, breaking the behind-icons illusion).
+      if (macWallpaperActive && mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.setBounds(screen.getPrimaryDisplay().bounds, false); } catch (e) {}
+        if (macBrowsingActive) applyMacBrowsingLevel(); else applyMacAmbientLevel();
+        positionMacWallpaperHud();
+      }
       scheduleWindowStateSend(mainWindow);
     });
     screen.on('display-added', () => scheduleWindowStateSend(mainWindow));
@@ -1813,6 +2076,7 @@ if (!gotSingleInstanceLock) {
     await createWindow();
     if (process.env.MINERADIO_WALLPAPER_SELFTEST === '1') runMacWallpaperSelfTest();
     else if (process.env.MINERADIO_WALLPAPER_HOLDTEST === '1') runMacWallpaperHoldTest();
+    else if (process.env.MINERADIO_OCCLUSION_PROBE === '1') runMacOcclusionProbe();
   });
 
   app.on('activate', () => {

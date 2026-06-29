@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mineradio Wallpaper Controls</title>
+<style>
+  :root{
+    --glass: rgba(8,14,18,.62);
+    --glass-strong: rgba(10,18,24,.78);
+    --line: rgba(255,255,255,.10);
+    --ink: rgba(224,250,255,.82);
+    --ink-dim: rgba(224,250,255,.52);
+    --accent: rgba(120,200,255,.95);
+    --accent-soft: rgba(120,200,255,.18);
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ width:100%; height:100%; background:transparent; overflow:hidden;
+    -webkit-user-select:none; user-select:none; cursor:default;
+    font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif; }
+  /* The pill itself is the drag handle so the user can reposition it; the buttons
+     opt out with -webkit-app-region:no-drag so clicks fire instead of dragging. */
+  .pill{
+    -webkit-app-region: drag;
+    position:absolute; inset:4px;
+    display:flex; align-items:center; gap:2px;
+    padding:0 6px;
+    border-radius:18px;
+    background:linear-gradient(180deg, var(--glass-strong), var(--glass));
+    border:1px solid var(--line);
+    box-shadow: 0 8px 24px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.06);
+    backdrop-filter: blur(18px) saturate(1.2);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  }
+  button{
+    -webkit-app-region: no-drag;
+    appearance:none; border:0; background:transparent; cursor:pointer;
+    width:40px; height:40px; border-radius:12px;
+    display:flex; align-items:center; justify-content:center;
+    color:var(--ink); transition:background .14s ease, color .14s ease, transform .08s ease;
+  }
+  button:hover{ background:rgba(120,200,255,.12); color:#fff; }
+  button:active{ transform:scale(.92); }
+  button svg{ width:18px; height:18px; fill:currentColor; pointer-events:none; }
+  .play{ width:46px; height:46px; }
+  .play svg{ width:22px; height:22px; }
+  .sep{ width:1px; height:22px; background:var(--line); margin:0 4px; -webkit-app-region:no-drag; }
+  .title{ flex:1 1 auto; min-width:0; padding:0 6px 0 10px; display:flex; flex-direction:column; justify-content:center; overflow:hidden; -webkit-app-region:drag; }
+  .title .t{ font-size:12px; line-height:1.25; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .title .a{ font-size:10px; line-height:1.2; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .title.empty .t{ color:var(--ink-dim); }
+  .title.empty .a{ display:none; }
+  #browse{ color:var(--ink-dim); }
+  #browse:hover{ color:#fff; }
+  body.browsing #browse{ color:var(--accent); background:var(--accent-soft); }
+  #exit:hover{ background:rgba(255,120,120,.16); color:#ffd9d9; }
+  .pause-glyph{ display:none; }
+  body.playing .play-glyph{ display:none; }
+  body.playing .pause-glyph{ display:inline; }
+</style>
+</head>
+<body>
+  <div class="pill" role="toolbar" aria-label="Mineradio 壁纸控制">
+    <div class="title empty" id="np"><span class="t" id="np-t">Mineradio</span><span class="a" id="np-a"></span></div>
+    <button id="prev" title="上一首" aria-label="上一首">
+      <svg viewBox="0 0 24 24"><path d="M7 6h2v12H7zm3 6 8 6V6z"/></svg>
+    </button>
+    <button id="play" class="play" title="播放 / 暂停" aria-label="播放或暂停">
+      <svg class="play-glyph" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      <svg class="pause-glyph" viewBox="0 0 24 24"><path d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+    </button>
+    <button id="next" title="下一首" aria-label="下一首">
+      <svg viewBox="0 0 24 24"><path d="M15 6h2v12h-2zM6 6v12l8-6z"/></svg>
+    </button>
+    <span class="sep"></span>
+    <button id="browse" title="浏览模式（前置 · 可完整操作 ⌥⌘B）" aria-label="切换浏览模式">
+      <svg viewBox="0 0 24 24"><path d="M12 5c-5 0-9 4.5-9 7s4 7 9 7 9-4.5 9-7-4-7-9-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg>
+    </button>
+    <button id="exit" title="退出壁纸模式（⌥⌘W）" aria-label="退出壁纸模式">
+      <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
+    </button>
+  </div>
+  <script>
+    (function(){
+      var api = window.desktopOverlay;
+      function on(id, fn){
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('click', function(e){ e.preventDefault(); fn(); });
+      }
+      if (api){
+        on('prev', function(){ api.hudAction('prevTrack'); });
+        on('play', function(){ api.hudAction('togglePlay'); });
+        on('next', function(){ api.hudAction('nextTrack'); });
+        on('browse', function(){ api.hudBrowsingToggle(); });
+        on('exit', function(){ api.hudExit(); });
+        if (typeof api.onHudState === 'function') {
+          api.onHudState(function(s){
+            document.body.classList.toggle('browsing', !!(s && s.browsing));
+          });
+        }
+        if (typeof api.onHudNowPlaying === 'function') {
+          api.onHudNowPlaying(function(s){
+            window.__hudNowPlaying = s || {};
+            var t = (s && s.title) ? String(s.title) : '';
+            var a = (s && s.artist) ? String(s.artist) : '';
+            var npT = document.getElementById('np-t');
+            var npA = document.getElementById('np-a');
+            var np = document.getElementById('np');
+            if (npT) npT.textContent = t || 'Mineradio';
+            if (npA) npA.textContent = a;
+            if (np) np.classList.toggle('empty', !t);
+            document.body.classList.toggle('playing', !!(s && s.playing));
+          });
+        }
+      }
+    })();
+  </script>
+</body>
+</html>

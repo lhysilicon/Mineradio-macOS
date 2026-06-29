@@ -16,4 +16,10 @@ contextBridge.exposeInMainWorld('desktopOverlay', {
   setLyricsLockState: (locked) => ipcRenderer.invoke('mineradio-desktop-lyrics-set-lock-state', !!locked),
   moveLyricsBy: (dx, dy) => ipcRenderer.invoke('mineradio-desktop-lyrics-move-by', Number(dx) || 0, Number(dy) || 0),
   closeLyrics: () => ipcRenderer.invoke('mineradio-desktop-lyrics-set-enabled', false, {}),
+  // macOS wallpaper control pill (transport + mode toggle).
+  onHudState: (callback) => bind('mineradio-wallpaper-hud-state', callback),
+  onHudNowPlaying: (callback) => bind('mineradio-wallpaper-hud-nowplaying', callback),
+  hudAction: (action) => ipcRenderer.invoke('mineradio-wallpaper-hud-action', String(action || '')),
+  hudBrowsingToggle: () => ipcRenderer.invoke('mineradio-wallpaper-hud-browsing-toggle'),
+  hudExit: () => ipcRenderer.invoke('mineradio-wallpaper-hud-exit'),
 });

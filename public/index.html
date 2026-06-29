@@ -3460,7 +3460,9 @@ var runtimePerfState = {
 };
 function isDeepBackgroundMode() {
   if (isLiveBackgroundKeepMode()) return false;
-  return !!(document.hidden || desktopRuntimeState.minimized || desktopRuntimeState.visible === false);
+  // wallpaperIdle: set by the macOS energy controller when the wallpaper is provably
+  // unseen (screen locked / suspended). Defaults undefined → no effect in normal use.
+  return !!(document.hidden || desktopRuntimeState.minimized || desktopRuntimeState.visible === false || desktopRuntimeState.wallpaperIdle === true);
 }
 function currentPerformanceBackgroundMode() {
   return normalizePerformanceBackgroundMode(fx && fx.performanceBackground, fx && fx.liveBackgroundKeep === true);
@@ -3728,6 +3730,17 @@ function installRenderPowerHooks() {
     if (typeof window.desktopWindow.getState === 'function') {
       window.desktopWindow.getState().then(updateDesktopRuntimeState).catch(function(){});
     }
+  }
+  if (window.desktopWindow && typeof window.desktopWindow.onWallpaperPower === 'function') {
+    window.desktopWindow.onWallpaperPower(function(p){
+      var idle = !!(p && p.idle);
+      if (desktopRuntimeState.wallpaperIdle === idle) return;
+      var wasDeep = isDeepBackgroundMode();
+      desktopRuntimeState.wallpaperIdle = idle;
+      updateRenderPowerClasses();
+      applyRendererPowerMode();
+      if (wasDeep && !isDeepBackgroundMode()) recoverVisualsAfterBackground('wallpaper-power');
+    });
   }
 }
 
@@ -26381,12 +26394,28 @@ function applyWallpaperModeState(force) {
   }
   pushWallpaperState(!!force);
 }
+function macHudPayload() {
+  var meta = (typeof currentDesktopSongMeta === 'function') ? currentDesktopSongMeta() : {};
+  return { title: (meta && meta.title) || '', artist: (meta && meta.artist) || '', playing: !!playing };
+}
+// Push now-playing to the macOS wallpaper control pill. Gated by the caller on the
+// mac-wallpaper-on body class, so it is a no-op in normal app use. Throttled by key.
+function pushMacHudState(force) {
+  var api = getDesktopWindowApi();
+  if (!api || typeof api.macHudNowPlaying !== 'function') return;
+  var payload = macHudPayload();
+  var key = payload.title + '|' + payload.artist + '|' + payload.playing;
+  if (!force && key === desktopOverlayPushState.lastMacHudKey) return;
+  desktopOverlayPushState.lastMacHudKey = key;
+  api.macHudNowPlaying(payload).catch(function(){});
+}
 function syncDesktopOverlayState() {
   if (fx.desktopLyrics) pushDesktopLyricsState(false);
   if (fx.wallpaperMode) pushWallpaperState(false);
 }
 setInterval(function(){
   if (fx && (fx.desktopLyrics || fx.wallpaperMode)) syncDesktopOverlayState();
+  if (document.body.classList.contains('mac-wallpaper-on')) pushMacHudState(false);
 }, 320);
 
 // 全屏
@@ -26905,6 +26934,7 @@ animate();
   function reflect(state){
     var on = !!(state && state.active);
     document.body.classList.toggle('mac-wallpaper-on', on);
+    if (on && typeof pushMacHudState === 'function') pushMacHudState(true);
     var btn = document.getElementById('mac-wallpaper-btn');
     if (btn) btn.title = on ? '退出壁纸模式（⌥⌘W）· 前置交互 ⌥⌘B' : '桌面壁纸模式（⌥⌘W）';
   }

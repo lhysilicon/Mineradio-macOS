@@ -44,10 +44,18 @@ contextBridge.exposeInMainWorld('desktopWindow', {
   macWallpaperToggle: () => ipcRenderer.invoke('mineradio-mac-wallpaper-toggle'),
   macWallpaperSet: (enabled) => ipcRenderer.invoke('mineradio-mac-wallpaper-set', !!enabled),
   macBrowsingToggle: () => ipcRenderer.invoke('mineradio-mac-browsing-toggle'),
+  macHudNowPlaying: (payload) => ipcRenderer.invoke('mineradio-mac-hud-nowplaying', payload || {}),
   onWallpaperModeChange: (callback) => {
     const listener = (_event, state) => callback(state || {});
     ipcRenderer.on('mineradio-wallpaper-mode', listener);
     return () => ipcRenderer.removeListener('mineradio-wallpaper-mode', listener);
+  },
+  // Energy controller: main tells the renderer to idle/resume the wallpaper visualizer
+  // when the desktop is provably unseen (screen locked / system suspended).
+  onWallpaperPower: (callback) => {
+    const listener = (_event, payload) => callback(payload || {});
+    ipcRenderer.on('mineradio-wallpaper-power', listener);
+    return () => ipcRenderer.removeListener('mineradio-wallpaper-power', listener);
   },
   onStateChange: (callback) => {
     const listener = (_event, state) => callback(state);

@@ -38,6 +38,33 @@ business logic was altered.
   browsing toggle (or the tray controls, which work in either state). Adds the `koffi`
   dependency (prebuilt N-API binary, bundled per-arch; the bridge is fail-soft and no-ops
   if unavailable).
+- `desktop/main.js` + `desktop/overlay-preload.js` + `public/wallpaper-hud.html` (new):
+  added a **floating mini control pill** for wallpaper mode — a small transport HUD
+  (prev / play-pause / next / browsing toggle / exit) that appears at the bottom of the
+  primary display on entering wallpaper mode and is removed on exit. Built on the desktop-
+  lyrics window recipe (`focusable:false` + `showInactive` + screen-saver level + all-
+  spaces) so its buttons are clickable WITHOUT stealing key focus from the user's frontmost
+  app; buttons reuse the existing `sendGlobalHotkeyAction` / wallpaper-toggle paths. Also:
+  fixed the ambient call to use the correct `visibleOnFullScreen` option key (the old
+  `visibleOnFullScreenUI` was a silent no-op); re-assert the wallpaper window's bounds +
+  level on `display-metrics-changed` so a resolution / display change can't break the
+  behind-icons layering; and `Esc` now sinks browsing mode back to ambient so the raised,
+  focus-holding state is never "stuck". Verified by the env-guarded integration self-test
+  (`MINERADIO_WALLPAPER_SELFTEST=1`), extended to assert the HUD is created, non-activating,
+  raised above the wallpaper, renders, and is destroyed on exit.
+- `desktop/main.js` + `desktop/mac-window-level.js` + `desktop/preload.js` + `public/index.html`:
+  added a **wallpaper energy controller**. When the desktop is provably unseen — screen
+  locked or system suspended (`powerMonitor`) — the wallpaper visualizer is told to idle and
+  the renderer drops to its existing deep-background 4×4 surface (≈ no GPU work); it resumes
+  on unlock/resume. The flag defaults off, so normal app rendering is unchanged. NOTE:
+  throttling-when-covered-by-a-fullscreen-app was investigated and dropped — an occlusion
+  probe measured that AppKit does not report a reliable `occlusionState` for an all-spaces /
+  desktop-level window (stays "visible" even when fully covered), so only the reliable
+  lock/suspend signals are acted on. The self-test asserts the idle signal reaches the
+  renderer (deepSleep on idle, off on resume).
+- `public/wallpaper-hud.html` + `public/index.html` + `desktop/*`: the control pill now shows
+  the **current track + play/pause state** (relayed main-window → main → HUD; gated on
+  wallpaper mode so it is a no-op otherwise). Self-test asserts the relay end-to-end.
 - `desktop/main.js` + `server.js`: the in-app updater no longer offers/opens a Windows
   `.exe` installer on macOS; installer asset extension is platform-aware.
 - `desktop/main.js`: added a macOS-only role-based application menu (keeps Cmd+C/V/X/A
