@@ -70,6 +70,19 @@ business logic was altered.
   artist, refined frosted-glass material + layered shadow, an accent-filled play/pause button,
   and entrance / press micro-animations. Now-playing payload carries a sanitized cover URL
   (http(s)/data:image only). Reviewed visually via a self-test screen capture of the pill.
+- `desktop/main.js`: the wallpaper now **truly fills the whole screen**. `setBounds(display.bounds)`
+  was being clamped to the work area (a menu-bar strip + dock gap let the real wallpaper show
+  through); switched to `setSimpleFullScreen(true)` (re-asserting the desktop level + all-spaces
+  + click-through after), which covers the entire screen while the menu bar / dock still draw on
+  top. Re-fits on display changes; reverts on exit. (An FFI `setFrame:` approach was tried first
+  and dropped — passing an NSRect by value to objc_msgSend crashes on arm64.) Because a window
+  cannot load while another is in simple-fullscreen, the HUD is created + loaded from `file://`
+  first, and full-bleed is applied only AFTER the pill finishes loading (did-finish-load, with a
+  fallback timeout) — otherwise the pill could fail to appear.
+- `desktop/main.js` + `desktop/overlay-preload.js` + `public/wallpaper-hud.html`: the control
+  pill is now **draggable anywhere** on the desktop. The page reports drag deltas (the window is
+  non-activating, so `-webkit-app-region:drag` is unreliable) and main moves + clamps it on-screen,
+  remembering the position across enter/exit. Verified by the env-guarded self-test.
 - `desktop/main.js` + `server.js`: the in-app updater no longer offers/opens a Windows
   `.exe` installer on macOS; installer asset extension is platform-aware.
 - `desktop/main.js`: added a macOS-only role-based application menu (keeps Cmd+C/V/X/A

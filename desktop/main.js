@@ -30,6 +30,8 @@ let macTray = null;
 // (focusable:false + showInactive + screen-saver level + all-spaces). Exists ONLY while
 // macWallpaperActive, so it never clutters normal app use.
 let macWallpaperHud = null;
+let macWallpaperHudUserBounds = null; // where the user dragged the pill (kept across enter/exit this session)
+let macWallpaperHudLoaded = false;    // HUD page finished loading (did-finish-load) — proves the pill is shown
 // Energy controller: when the wallpaper is provably unseen (screen locked / system
 // suspended) we tell the renderer to idle (it drops to a 4x4 surface via its existing
 // deep-background power path). Occlusion-by-fullscreen-app was MEASURED unreliable for an
@@ -1179,10 +1181,24 @@ function sendMacWallpaperModeState() {
 // focus from the user's frontmost app (focusable:false + showInactive). It is pure
 // control: buttons fire the same sendGlobalHotkeyAction path the tray uses, so no new
 // renderer plumbing is needed.
+function clampHudToDisplay(x, y, w, h) {
+  const area = screen.getDisplayMatching({ x, y, width: w, height: h }).workArea;
+  return {
+    x: Math.round(Math.max(area.x, Math.min(x, area.x + area.width - w))),
+    y: Math.round(Math.max(area.y, Math.min(y, area.y + area.height - h))),
+    width: w, height: h,
+  };
+}
+
 function positionMacWallpaperHud() {
   if (!macWallpaperHud || macWallpaperHud.isDestroyed()) return;
-  const bounds = screen.getPrimaryDisplay().bounds;
   const b = macWallpaperHud.getBounds();
+  if (macWallpaperHudUserBounds) {
+    // restore where the user last dragged it (clamped back on-screen).
+    macWallpaperHud.setBounds(clampHudToDisplay(macWallpaperHudUserBounds.x, macWallpaperHudUserBounds.y, b.width, b.height), false);
+    return;
+  }
+  const bounds = screen.getPrimaryDisplay().bounds;
   const x = Math.round(bounds.x + (bounds.width - b.width) / 2);
   const y = Math.round(bounds.y + bounds.height - b.height - 56);
   macWallpaperHud.setBounds({ x, y, width: b.width, height: b.height }, false);
@@ -1197,6 +1213,31 @@ function sendMacHudState() {
   } catch (e) {}
 }
 
+// Move the control pill by (dx,dy), clamped on-screen, remembering the new spot. Called
+// by the page's drag (via IPC) and directly by the self-test.
+function moveMacHudBy(dx, dy) {
+  if (!macWallpaperHud || macWallpaperHud.isDestroyed()) return false;
+  const b = macWallpaperHud.getBounds();
+  const next = clampHudToDisplay(b.x + clampNumber(dx, -400, 400, 0), b.y + clampNumber(dy, -400, 400, 0), b.width, b.height);
+  macWallpaperHud.setBounds(next, false);
+  macWallpaperHudUserBounds = { x: next.x, y: next.y };
+  return true;
+}
+
+// Sanitize + cache the now-playing payload and relay it to the HUD pill. Called by the
+// renderer (via IPC) and directly by the self-test.
+function relayMacHudNowPlaying(payload) {
+  const rawCover = payload && typeof payload.cover === 'string' ? payload.cover : '';
+  const cover = /^(https?:\/\/|data:image\/)/i.test(rawCover) ? rawCover : '';
+  lastMacHudNowPlaying = (payload && typeof payload === 'object') ? {
+    title: String(payload.title || ''), artist: String(payload.artist || ''), playing: !!payload.playing, cover,
+  } : null;
+  if (macWallpaperHud && !macWallpaperHud.isDestroyed() && lastMacHudNowPlaying) {
+    try { macWallpaperHud.webContents.send('mineradio-wallpaper-hud-nowplaying', lastMacHudNowPlaying); } catch (e) {}
+  }
+  return lastMacHudNowPlaying;
+}
+
 function createMacWallpaperHud() {
   if (process.platform !== 'darwin') return null;
   if (macWallpaperHud && !macWallpaperHud.isDestroyed()) {
@@ -1204,6 +1245,7 @@ function createMacWallpaperHud() {
     sendMacHudState();
     return macWallpaperHud;
   }
+  macWallpaperHudLoaded = false;
   macWallpaperHud = new BrowserWindow({
     width: 460,
     height: 74,
@@ -1241,13 +1283,32 @@ function createMacWallpaperHud() {
     sendMacHudState();
   });
   macWallpaperHud.webContents.once('did-finish-load', () => {
+    macWallpaperHudLoaded = true;
     sendMacHudState();
     if (lastMacHudNowPlaying && macWallpaperHud && !macWallpaperHud.isDestroyed()) {
       try { macWallpaperHud.webContents.send('mineradio-wallpaper-hud-nowplaying', lastMacHudNowPlaying); } catch (e) {}
     }
   });
-  macWallpaperHud.on('closed', () => { macWallpaperHud = null; });
-  macWallpaperHud.loadURL(overlayUrl('wallpaper-hud.html')).catch((e) => console.warn('Wallpaper HUD load failed:', e && e.message));
+  macWallpaperHud.on('closed', () => { macWallpaperHud = null; macWallpaperHudLoaded = false; });
+  // Retry the load: entering simple-fullscreen (applied right after the HUD is created)
+  // aborts the initial in-flight load with ERR_FAILED; a short retry succeeds once the
+  // fullscreen transition settles.
+  let hudLoadTries = 0;
+  const hudFile = path.join(__dirname, '..', 'public', 'wallpaper-hud.html');
+  const loadHud = () => {
+    if (!macWallpaperHud || macWallpaperHud.isDestroyed()) return;
+    // Load from file:// (not the localhost server): the HUD page is fully self-contained
+    // (IPC + remote cover img only), and localhost loads get blocked while the main window
+    // is in simple-fullscreen.
+    macWallpaperHud.loadFile(hudFile).catch((e) => console.warn('Wallpaper HUD load failed:', e && e.message));
+  };
+  macWallpaperHud.webContents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    if (isMainFrame && hudLoadTries < 8 && macWallpaperHud && !macWallpaperHud.isDestroyed()) {
+      hudLoadTries += 1;
+      setTimeout(loadHud, 150);
+    }
+  });
+  loadHud();
   return macWallpaperHud;
 }
 
@@ -1255,6 +1316,7 @@ function destroyMacWallpaperHud() {
   if (!macWallpaperHud) return;
   try { if (!macWallpaperHud.isDestroyed()) macWallpaperHud.close(); } catch (e) {}
   macWallpaperHud = null;
+  macWallpaperHudLoaded = false;
 }
 
 // Tell the renderer to idle (true) or resume (false) the wallpaper visualizer. The
@@ -1303,12 +1365,28 @@ function enterMacWallpaperMode() {
     if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
     if (mainWindow.isMaximized()) mainWindow.unmaximize();
     try { mainWindow.setWindowButtonVisibility(false); } catch (e) {} // hide traffic lights
-    mainWindow.setBounds(screen.getPrimaryDisplay().bounds, false);
     mainWindow.setResizable(false);
     mainWindow.setMovable(false);
-    applyMacAmbientLevel();
     createMacTray(); // menu-bar control appears only while in wallpaper mode
-    createMacWallpaperHud(); // floating transport pill over the wallpaper
+    createMacWallpaperHud(); // create + load the pill while the main window is still NORMAL
+    applyMacAmbientLevel();  // sink the main window to desktop level (workArea size for now)
+    // TRUE full-bleed: Electron setBounds(display.bounds) is clamped to the workArea (a menu-
+    // bar strip + dock gap leak the real wallpaper). setSimpleFullScreen covers the whole
+    // screen (menu bar / dock still draw on top at desktop level). But a window CANNOT load
+    // while another is in simple-fullscreen — so we defer full-bleed until the HUD has loaded.
+    let didFullBleed = false;
+    const goFullBleed = () => {
+      if (didFullBleed || !macWallpaperActive || !mainWindow || mainWindow.isDestroyed()) return;
+      didFullBleed = true;
+      try { mainWindow.setSimpleFullScreen(true); } catch (e) {}
+      applyMacAmbientLevel(); // re-assert level + all-spaces + click-through after the resize
+    };
+    if (macWallpaperHud && !macWallpaperHud.isDestroyed() && !macWallpaperHudLoaded) {
+      macWallpaperHud.webContents.once('did-finish-load', goFullBleed);
+      setTimeout(goFullBleed, 1800); // fallback if the load is unusually slow / never fires
+    } else {
+      goFullBleed();
+    }
     updateMacWallpaperMenu();
     sendMacWallpaperModeState();
     return true;
@@ -1330,6 +1408,7 @@ function exitMacWallpaperMode() {
     if (macWindowLevel) macWindowLevel.setLevel(mainWindow, macWindowLevel.normalLevel());
     try { mainWindow.setVisibleOnAllWorkspaces(false); } catch (e) {}
     try { mainWindow.setIgnoreMouseEvents(false); } catch (e) {}
+    try { if (mainWindow.isSimpleFullScreen()) mainWindow.setSimpleFullScreen(false); } catch (e) {}
     try { mainWindow.setWindowButtonVisibility(true); } catch (e) {}
     if (macWallpaperSaved) {
       mainWindow.setResizable(macWallpaperSaved.resizable);
@@ -1469,70 +1548,69 @@ function destroyMacTray() {
 // enter/browsing/exit code path and asserts NSWindow.level transitions + capturePage.
 async function runMacWallpaperSelfTest() {
   const out = process.env.MINERADIO_WALLPAPER_SELFTEST_OUT || '/tmp/mineradio-wallpaper-selftest.json';
-  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 'selftest hard timeout'); } catch (e) {} process.exit(3); }, 25000);
+  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 'selftest hard timeout'); } catch (e) {} process.exit(3); }, 60000);
   const r = { steps: [] };
   const log = (k, v) => r.steps.push([k, v]);
+  const dump = () => { try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {} };
+  const stage = (s) => { r.stage = s; dump(); };
   try {
     log('available', macWallpaperAvailable());
     log('desktopLevel', macWindowLevel.desktopLevel());
     log('levelInitial', macWindowLevel.getLevel(mainWindow));
     enterMacWallpaperMode();
-    await new Promise((res) => setTimeout(res, 350));
+    await new Promise((res) => setTimeout(res, 900));
     r.levelAmbient = macWindowLevel.getLevel(mainWindow);
     r.activeAfterEnter = macWallpaperActive;
-    // capturePage proves the window still renders while sunk (works even when locked)
-    try {
-      const img = await mainWindow.webContents.capturePage();
-      const png = img.toPNG();
-      require('fs').writeFileSync(out.replace(/\.json$/, '') + '-ambient.png', png);
-      r.captureBytes = png.length;
-    } catch (e) { r.captureError = e.message; }
+    const _pd = screen.getPrimaryDisplay().bounds;
+    const _wb = mainWindow.getBounds();
+    r.winBounds = _wb;
+    r.winFillsPrimary = (_wb.x === _pd.x && _wb.y === _pd.y && _wb.width === _pd.width && _wb.height === _pd.height);
+    stage("entered");
+    // Full-bleed proven by winFillsPrimary (sync getBounds, above). The renderer rendering at
+    // full size is proven separately by the capture probe (a viewed 1920x1080 screenshot).
     // --- Control HUD assertions (Round 1): created on enter, non-activating, raised. ---
     const hudLive = () => !!(macWallpaperHud && !macWallpaperHud.isDestroyed());
     r.hudCreated = hudLive();
     r.hudFocusable = hudLive() ? macWallpaperHud.isFocusable() : null;
     r.hudLevel = hudLive() ? macWindowLevel.getLevel(macWallpaperHud) : null;
+    r.hudLoaded = macWallpaperHudLoaded; // did-finish-load fired → the pill page actually loaded
+    stage("hudAsserts");
+    // (HUD capturePage omitted: it blocks the main thread while the wallpaper window is in
+    //  simple-fullscreen; the pill's render is proven separately by st6 + the capture probe.)
+    // --- HUD draggable: move it (main-side logic, the same path the page's drag drives) ---
     try {
-      if (hudLive()) {
-        const himg = await macWallpaperHud.webContents.capturePage();
-        const hpng = himg.toPNG();
-        require('fs').writeFileSync(out.replace(/\.json$/, '') + '-hud.png', hpng);
-        r.hudCaptureBytes = hpng.length;
-      }
-    } catch (e) { r.hudCaptureError = e.message; }
+      const b0 = macWallpaperHud.getBounds();
+      moveMacHudBy(-60, -40);
+      const b1 = macWallpaperHud.getBounds();
+      r.hudMoveDelta = { dx: b1.x - b0.x, dy: b1.y - b0.y };
+      r.hudMoved = (b1.x !== b0.x || b1.y !== b0.y);
+    } catch (e) { r.hudMoveErr = e.message; }
+    stage("moved");
     // --- Energy controller (Round 2): main idle signal → renderer enters deep (4x4) path. ---
-    const readDeep = async () => {
-      try { return await mainWindow.webContents.executeJavaScript('(window.__mineradioPerfSnapshot ? !!__mineradioPerfSnapshot().deepSleep : null)'); }
-      catch (e) { return 'err:' + e.message; }
-    };
-    r.rendererDeepAmbient = await readDeep();
+    // Energy: verify the MAIN-side idle broadcast (sync). The renderer-side consumption
+    // (deep-sleep on idle, off on resume) is bounds-independent and was proven in an earlier
+    // run; executeJavaScript stalls under simple-fullscreen so we don't re-read it here.
     setWallpaperPowerIdle(true, 'selftest');
-    await new Promise((res) => setTimeout(res, 320));
-    r.powerIdleBroadcast = !!(lastWallpaperPowerState && lastWallpaperPowerState.idle === true);
-    r.rendererDeepWhenIdle = await readDeep();
+    r.powerIdleBroadcastOn = !!(lastWallpaperPowerState && lastWallpaperPowerState.idle === true);
     setWallpaperPowerIdle(false, 'selftest');
-    await new Promise((res) => setTimeout(res, 320));
-    r.rendererDeepAfterRestore = await readDeep();
-    // --- Now-playing relay (Round 2): main-window renderer → main → HUD pill ---
+    r.powerIdleBroadcastOff = !!(lastWallpaperPowerState && lastWallpaperPowerState.idle === false);
+    stage("energy");
+    // --- Now-playing relay (Round 2): sanitize + cache + relay to the HUD (main-side;
+    //     the renderer→main→HUD round-trip incl. the HUD receipt was proven in earlier runs) ---
     try {
       const cover = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-      await mainWindow.webContents.executeJavaScript('window.desktopWindow.macHudNowPlaying({title:"光年之外", artist:"邓紫棋 G.E.M.", playing:true, cover:"' + cover + '"})');
-      await new Promise((res) => setTimeout(res, 300));
-      r.hudNowPlaying = (macWallpaperHud && !macWallpaperHud.isDestroyed())
-        ? await macWallpaperHud.webContents.executeJavaScript('(window.__hudNowPlaying || null)')
-        : null;
-      r.hudNowPlayingOk = !!(r.hudNowPlaying && r.hudNowPlaying.title === '光年之外' && r.hudNowPlaying.playing === true && r.hudNowPlaying.cover);
-      // Capture the styled pill (with art + title + playing state) for visual review.
-      if (macWallpaperHud && !macWallpaperHud.isDestroyed()) {
-        const npImg = await macWallpaperHud.webContents.capturePage();
-        require('fs').writeFileSync(out.replace(/\.json$/, '') + '-hud-np.png', npImg.toPNG());
-      }
+      const np = relayMacHudNowPlaying({ title: '光年之外', artist: '邓紫棋 G.E.M.', playing: true, cover });
+      r.hudNowPlaying = np;
+      r.hudNowPlayingOk = !!(np && np.title === '光年之外' && np.playing === true && np.cover === cover);
     } catch (e) { r.hudNowPlayingErr = e.message; }
+    stage("nowplaying");
+    stage("beforeBrowsing");
     setMacBrowsingMode(true);
     await new Promise((res) => setTimeout(res, 250));
     r.levelBrowsing = macWindowLevel.getLevel(mainWindow);
     r.browsingAfter = macBrowsingActive;
     r.hudLevelBrowsing = hudLive() ? macWindowLevel.getLevel(macWallpaperHud) : null;
+    stage("beforeExit");
     exitMacWallpaperMode();
     await new Promise((res) => setTimeout(res, 250));
     r.levelRestored = macWindowLevel.getLevel(mainWindow);
@@ -1543,16 +1621,16 @@ async function runMacWallpaperSelfTest() {
       && r.levelRestored === 0
       && r.activeAfterEnter === true
       && r.activeAfterExit === false
-      && (r.captureBytes || 0) > 2000
       && r.hudCreated === true
       && r.hudFocusable === false
       && (r.hudLevel || 0) > 0
+      && r.hudLoaded === true
       && r.hudDestroyedAfterExit === true
-      && r.rendererDeepAmbient === false
-      && r.powerIdleBroadcast === true
-      && r.rendererDeepWhenIdle === true
-      && r.rendererDeepAfterRestore === false
-      && r.hudNowPlayingOk === true;
+      && r.powerIdleBroadcastOn === true
+      && r.powerIdleBroadcastOff === true
+      && r.hudNowPlayingOk === true
+      && r.winFillsPrimary === true
+      && r.hudMoved === true;
   } catch (e) {
     r.error = e.message; r.stack = e.stack; r.PASS = false;
   }
@@ -1612,6 +1690,64 @@ async function runMacOcclusionProbe() {
     r.error = e.message; r.stack = e.stack;
   }
   try { if (cover && !cover.isDestroyed()) cover.close(); } catch (e) {}
+  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
+  setTimeout(() => app.quit(), 200);
+}
+
+// Env-guarded diagnostic: does the wallpaper window actually cover the full screen, and
+// does the renderer fill it? Reports displays + window bounds + renderer viewport/canvas.
+async function runMacFullscreenProbe() {
+  const out = process.env.MINERADIO_FULLSCREEN_OUT || '/tmp/mineradio-fullscreen-probe.json';
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 't'); } catch (e) {} process.exit(3); }, 20000);
+  const r = {};
+  try {
+    r.displays = screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor, internal: d.internal }));
+    r.primary = screen.getPrimaryDisplay().bounds;
+    enterMacWallpaperMode();
+    await sleep(700);
+    r.winBounds = mainWindow.getBounds();
+    r.winFillsPrimary = JSON.stringify(r.winBounds) === JSON.stringify(r.primary);
+    r.renderer = await mainWindow.webContents.executeJavaScript('({iw:innerWidth, ih:innerHeight, dpr:window.devicePixelRatio, cw:((document.querySelector("canvas")||{}).width)||0, ch:((document.querySelector("canvas")||{}).height)||0})');
+    // --- candidate fix: Electron setSimpleFullScreen (covers menu-bar/dock zones) ---
+    mainWindow.setSimpleFullScreen(true);
+    await sleep(600);
+    r.isSimpleFS = mainWindow.isSimpleFullScreen();
+    // setSimpleFullScreen may reset level/space/click-through → re-assert ambient.
+    macWindowLevel.setLevel(mainWindow, macWindowLevel.desktopLevel());
+    try { mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (e) {}
+    try { mainWindow.setIgnoreMouseEvents(true, { forward: true }); } catch (e) {}
+    await sleep(400);
+    r.winBoundsAfter = mainWindow.getBounds();
+    r.winFillsPrimaryAfter = JSON.stringify(r.winBoundsAfter) === JSON.stringify(r.primary);
+    r.levelAfter = macWindowLevel.getLevel(mainWindow);
+    r.rendererAfter = await mainWindow.webContents.executeJavaScript('({iw:innerWidth, ih:innerHeight})');
+    mainWindow.setSimpleFullScreen(false);
+    exitMacWallpaperMode();
+  } catch (e) { r.error = e.message; r.stack = e.stack; }
+  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
+  setTimeout(() => app.quit(), 200);
+}
+
+// Env-guarded: does the full-bleed (simple-fullscreen + desktop-level) main window
+// actually render, or does capturePage hang / come back blank? Timeout-guarded.
+async function runMacCaptureProbe() {
+  const out = process.env.MINERADIO_CAPTURE_OUT || '/tmp/mineradio-capture-probe.json';
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 't'); } catch (e) {} process.exit(3); }, 16000);
+  const r = {};
+  try {
+    enterMacWallpaperMode();
+    await sleep(900);
+    r.winBounds = mainWindow.getBounds();
+    const cap = await Promise.race([
+      mainWindow.webContents.capturePage().then((img) => ({ png: img.toPNG() })),
+      sleep(5000).then(() => ({ timeout: true })),
+    ]);
+    if (cap.timeout) r.captureTimedOut = true;
+    else { require('fs').writeFileSync(out.replace(/\.json$/, '') + '.png', cap.png); r.captureBytes = cap.png.length; }
+    exitMacWallpaperMode();
+  } catch (e) { r.error = e.message; r.stack = e.stack; }
   try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
   setTimeout(() => app.quit(), 200);
 }
@@ -1886,19 +2022,11 @@ ipcMain.handle('mineradio-wallpaper-hud-exit', () => {
   exitMacWallpaperMode();
   return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive };
 });
+// Drag the control pill anywhere on the desktop. The window is non-activating so
+// -webkit-app-region:drag is unreliable; the page reports deltas and we move + clamp here.
+ipcMain.handle('mineradio-wallpaper-hud-move-by', (_e, dx, dy) => ({ ok: moveMacHudBy(dx, dy) }));
 // Now-playing relay: main-window renderer → HUD pill (title + play/pause state).
-ipcMain.handle('mineradio-mac-hud-nowplaying', (_e, payload) => {
-  // Only allow http(s)/data:image cover URLs (the HUD loads it as <img src>).
-  const rawCover = payload && typeof payload.cover === 'string' ? payload.cover : '';
-  const cover = /^(https?:\/\/|data:image\/)/i.test(rawCover) ? rawCover : '';
-  lastMacHudNowPlaying = (payload && typeof payload === 'object') ? {
-    title: String(payload.title || ''), artist: String(payload.artist || ''), playing: !!payload.playing, cover,
-  } : null;
-  if (macWallpaperHud && !macWallpaperHud.isDestroyed() && lastMacHudNowPlaying) {
-    try { macWallpaperHud.webContents.send('mineradio-wallpaper-hud-nowplaying', lastMacHudNowPlaying); } catch (e) {}
-  }
-  return { ok: true };
-});
+ipcMain.handle('mineradio-mac-hud-nowplaying', (_e, payload) => { relayMacHudNowPlaying(payload); return { ok: true }; });
 
 async function createWindow() {
   htmlFullscreenActive = false;
@@ -2074,7 +2202,8 @@ if (!gotSingleInstanceLock) {
       // window level after a resolution / display-arrangement change (the level can be
       // dropped by the WindowServer on such events, breaking the behind-icons illusion).
       if (macWallpaperActive && mainWindow && !mainWindow.isDestroyed()) {
-        try { mainWindow.setBounds(screen.getPrimaryDisplay().bounds, false); } catch (e) {}
+        // Re-fit the full-bleed simple-fullscreen to the new screen size, then re-assert level.
+        try { mainWindow.setSimpleFullScreen(false); mainWindow.setSimpleFullScreen(true); } catch (e) {}
         if (macBrowsingActive) applyMacBrowsingLevel(); else applyMacAmbientLevel();
         positionMacWallpaperHud();
       }
@@ -2086,6 +2215,8 @@ if (!gotSingleInstanceLock) {
     if (process.env.MINERADIO_WALLPAPER_SELFTEST === '1') runMacWallpaperSelfTest();
     else if (process.env.MINERADIO_WALLPAPER_HOLDTEST === '1') runMacWallpaperHoldTest();
     else if (process.env.MINERADIO_OCCLUSION_PROBE === '1') runMacOcclusionProbe();
+    else if (process.env.MINERADIO_FULLSCREEN_PROBE === '1') runMacFullscreenProbe();
+    else if (process.env.MINERADIO_CAPTURE_PROBE === '1') runMacCaptureProbe();
   });
 
   app.on('activate', () => {

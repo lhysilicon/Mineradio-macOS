@@ -20,7 +20,7 @@
   @keyframes rise{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}
   @keyframes bounce{0%,100%{height:4px}50%{height:13px}}
   .pill{
-    -webkit-app-region:drag;
+    cursor:grab;
     position:absolute;inset:6px;
     display:flex;align-items:center;gap:11px;
     padding:7px 13px 7px 7px;
@@ -50,7 +50,8 @@
   .eq i:nth-child(4){animation-delay:.12s}
   body.playing .eq i{animation-play-state:running}
   /* meta */
-  .meta{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px;-webkit-app-region:drag}
+  .meta{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px}
+  body.dragging .pill{cursor:grabbing}
   .meta .t{font-size:13px;font-weight:600;line-height:1.22;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.1px}
   .meta .a{font-size:11px;line-height:1.2;color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .meta.empty .a{display:none}
@@ -129,6 +130,27 @@
           else { img.removeAttribute('src'); art.classList.remove('has'); }
           document.body.classList.toggle('playing', !!(s && s.playing));
         });
+      }
+      // Drag the pill anywhere — the window is non-activating, so we move it manually
+      // via screen-delta reports to main rather than -webkit-app-region:drag.
+      var pill = document.querySelector('.pill');
+      var dragging = false, lastX = 0, lastY = 0;
+      function isControl(t){ return !!(t && t.closest && t.closest('button')); }
+      if (pill) {
+        pill.addEventListener('mousedown', function(e){
+          if (e.button !== 0 || isControl(e.target)) return;
+          dragging = true; lastX = e.screenX; lastY = e.screenY;
+          document.body.classList.add('dragging');
+          e.preventDefault();
+        });
+        window.addEventListener('mousemove', function(e){
+          if (!dragging) return;
+          var dx = e.screenX - lastX, dy = e.screenY - lastY;
+          if (dx || dy) { lastX = e.screenX; lastY = e.screenY; if (api && api.hudMoveBy) api.hudMoveBy(dx, dy); }
+        });
+        function endDrag(){ if (dragging) { dragging = false; document.body.classList.remove('dragging'); } }
+        window.addEventListener('mouseup', endDrag);
+        window.addEventListener('mouseleave', endDrag);
       }
     })();
   </script>

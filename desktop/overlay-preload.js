@@ -22,4 +22,5 @@ contextBridge.exposeInMainWorld('desktopOverlay', {
   hudAction: (action) => ipcRenderer.invoke('mineradio-wallpaper-hud-action', String(action || '')),
   hudBrowsingToggle: () => ipcRenderer.invoke('mineradio-wallpaper-hud-browsing-toggle'),
   hudExit: () => ipcRenderer.invoke('mineradio-wallpaper-hud-exit'),
+  hudMoveBy: (dx, dy) => ipcRenderer.invoke('mineradio-wallpaper-hud-move-by', Number(dx) || 0, Number(dy) || 0),
 });
