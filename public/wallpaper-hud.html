@@ -6,112 +6,129 @@
 <title>Mineradio Wallpaper Controls</title>
 <style>
   :root{
-    --glass: rgba(8,14,18,.62);
-    --glass-strong: rgba(10,18,24,.78);
-    --line: rgba(255,255,255,.10);
-    --ink: rgba(224,250,255,.82);
-    --ink-dim: rgba(224,250,255,.52);
-    --accent: rgba(120,200,255,.95);
-    --accent-soft: rgba(120,200,255,.18);
+    --accent:#7cc7ff;
+    --ink:rgba(236,248,255,.94);
+    --ink-dim:rgba(206,226,240,.55);
+    --glass-top:rgba(24,32,42,.72);
+    --glass-bot:rgba(10,15,21,.60);
+    --line:rgba(255,255,255,.12);
   }
-  *{ box-sizing:border-box; margin:0; padding:0; }
-  html,body{ width:100%; height:100%; background:transparent; overflow:hidden;
-    -webkit-user-select:none; user-select:none; cursor:default;
-    font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif; }
-  /* The pill itself is the drag handle so the user can reposition it; the buttons
-     opt out with -webkit-app-region:no-drag so clicks fire instead of dragging. */
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;background:transparent;overflow:hidden;
+    -webkit-user-select:none;user-select:none;cursor:default;
+    font-family:-apple-system,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;}
+  @keyframes rise{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}
+  @keyframes bounce{0%,100%{height:4px}50%{height:13px}}
   .pill{
-    -webkit-app-region: drag;
-    position:absolute; inset:4px;
-    display:flex; align-items:center; gap:2px;
-    padding:0 6px;
-    border-radius:18px;
-    background:linear-gradient(180deg, var(--glass-strong), var(--glass));
+    -webkit-app-region:drag;
+    position:absolute;inset:6px;
+    display:flex;align-items:center;gap:11px;
+    padding:7px 13px 7px 7px;
+    border-radius:22px;
+    background:linear-gradient(180deg,var(--glass-top),var(--glass-bot));
     border:1px solid var(--line);
-    box-shadow: 0 8px 24px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.06);
-    backdrop-filter: blur(18px) saturate(1.2);
-    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    box-shadow:0 14px 44px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.09), 0 0 0 .5px rgba(0,0,0,.45);
+    backdrop-filter:blur(34px) saturate(1.7);
+    -webkit-backdrop-filter:blur(34px) saturate(1.7);
+    animation:rise .34s cubic-bezier(.2,.85,.25,1) both;
+    overflow:hidden;
   }
-  button{
-    -webkit-app-region: no-drag;
-    appearance:none; border:0; background:transparent; cursor:pointer;
-    width:40px; height:40px; border-radius:12px;
-    display:flex; align-items:center; justify-content:center;
-    color:var(--ink); transition:background .14s ease, color .14s ease, transform .08s ease;
-  }
-  button:hover{ background:rgba(120,200,255,.12); color:#fff; }
-  button:active{ transform:scale(.92); }
-  button svg{ width:18px; height:18px; fill:currentColor; pointer-events:none; }
-  .play{ width:46px; height:46px; }
-  .play svg{ width:22px; height:22px; }
-  .sep{ width:1px; height:22px; background:var(--line); margin:0 4px; -webkit-app-region:no-drag; }
-  .title{ flex:1 1 auto; min-width:0; padding:0 6px 0 10px; display:flex; flex-direction:column; justify-content:center; overflow:hidden; -webkit-app-region:drag; }
-  .title .t{ font-size:12px; line-height:1.25; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .title .a{ font-size:10px; line-height:1.2; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .title.empty .t{ color:var(--ink-dim); }
-  .title.empty .a{ display:none; }
-  #browse{ color:var(--ink-dim); }
-  #browse:hover{ color:#fff; }
-  body.browsing #browse{ color:var(--accent); background:var(--accent-soft); }
-  #exit:hover{ background:rgba(255,120,120,.16); color:#ffd9d9; }
-  .pause-glyph{ display:none; }
-  body.playing .play-glyph{ display:none; }
-  body.playing .pause-glyph{ display:inline; }
+  /* album art */
+  .art{flex:0 0 auto;width:46px;height:46px;border-radius:13px;position:relative;overflow:hidden;
+    background:linear-gradient(135deg,rgba(124,199,255,.28),rgba(155,140,255,.22));
+    box-shadow:0 5px 14px rgba(0,0,0,.42), inset 0 0 0 1px rgba(255,255,255,.10);}
+  .art img{width:100%;height:100%;object-fit:cover;display:none}
+  .art.has img{display:block}
+  .art .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.5)}
+  .art.has .ph{display:none}
+  .eq{position:absolute;left:0;right:0;bottom:0;height:18px;display:flex;align-items:flex-end;justify-content:center;gap:2px;
+    padding-bottom:4px;background:linear-gradient(180deg,transparent,rgba(0,0,0,.5));opacity:0;transition:opacity .25s}
+  body.playing .art .eq{opacity:1}
+  .eq i{width:3px;height:4px;border-radius:2px;background:var(--accent);animation:bounce 1s ease-in-out infinite;animation-play-state:paused}
+  .eq i:nth-child(2){animation-delay:.22s}
+  .eq i:nth-child(3){animation-delay:.44s}
+  .eq i:nth-child(4){animation-delay:.12s}
+  body.playing .eq i{animation-play-state:running}
+  /* meta */
+  .meta{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px;-webkit-app-region:drag}
+  .meta .t{font-size:13px;font-weight:600;line-height:1.22;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.1px}
+  .meta .a{font-size:11px;line-height:1.2;color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .meta.empty .a{display:none}
+  .meta.empty .t{color:var(--ink-dim);font-weight:500}
+  /* controls */
+  .ctrls{flex:0 0 auto;display:flex;align-items:center;gap:1px;-webkit-app-region:no-drag}
+  button{-webkit-app-region:no-drag;appearance:none;border:0;background:transparent;cursor:pointer;
+    width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+    color:var(--ink);transition:background .15s ease,color .15s ease,transform .08s ease}
+  button:hover{background:rgba(255,255,255,.10);color:#fff}
+  button:active{transform:scale(.9)}
+  button svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
+  .play{width:40px;height:40px;border-radius:50%;color:#06121f;margin:0 3px;
+    background:linear-gradient(180deg,var(--accent),#5fb0f0);
+    box-shadow:0 4px 13px rgba(124,199,255,.42), inset 0 1px 0 rgba(255,255,255,.45)}
+  .play:hover{background:linear-gradient(180deg,#9ad4ff,var(--accent));color:#06121f;transform:translateY(-1px)}
+  .play:active{transform:scale(.93)}
+  .play svg{width:19px;height:19px}
+  .pause-glyph{display:none}
+  body.playing .play-glyph{display:none}
+  body.playing .pause-glyph{display:inline}
+  .sep{width:1px;height:20px;background:var(--line);margin:0 5px;-webkit-app-region:no-drag}
+  #browse,#exit{width:30px;height:30px;color:var(--ink-dim)}
+  #browse:hover{color:#fff}
+  body.browsing #browse{color:var(--accent);background:rgba(124,199,255,.16)}
+  #exit:hover{background:rgba(255,110,110,.18);color:#ffd9d9}
 </style>
 </head>
 <body>
   <div class="pill" role="toolbar" aria-label="Mineradio 壁纸控制">
-    <div class="title empty" id="np"><span class="t" id="np-t">Mineradio</span><span class="a" id="np-a"></span></div>
-    <button id="prev" title="上一首" aria-label="上一首">
-      <svg viewBox="0 0 24 24"><path d="M7 6h2v12H7zm3 6 8 6V6z"/></svg>
-    </button>
-    <button id="play" class="play" title="播放 / 暂停" aria-label="播放或暂停">
-      <svg class="play-glyph" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-      <svg class="pause-glyph" viewBox="0 0 24 24"><path d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
-    </button>
-    <button id="next" title="下一首" aria-label="下一首">
-      <svg viewBox="0 0 24 24"><path d="M15 6h2v12h-2zM6 6v12l8-6z"/></svg>
-    </button>
-    <span class="sep"></span>
-    <button id="browse" title="浏览模式（前置 · 可完整操作 ⌥⌘B）" aria-label="切换浏览模式">
-      <svg viewBox="0 0 24 24"><path d="M12 5c-5 0-9 4.5-9 7s4 7 9 7 9-4.5 9-7-4-7-9-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg>
-    </button>
-    <button id="exit" title="退出壁纸模式（⌥⌘W）" aria-label="退出壁纸模式">
-      <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
-    </button>
+    <div class="art" id="art">
+      <span class="ph"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg></span>
+      <img id="art-img" alt="" />
+      <span class="eq"><i></i><i></i><i></i><i></i></span>
+    </div>
+    <div class="meta empty" id="meta">
+      <span class="t" id="np-t">Mineradio</span>
+      <span class="a" id="np-a"></span>
+    </div>
+    <div class="ctrls">
+      <button id="prev" title="上一首" aria-label="上一首"><svg viewBox="0 0 24 24"><path d="M7 6h2v12H7zm3 6 8 6V6z"/></svg></button>
+      <button id="play" class="play" title="播放 / 暂停" aria-label="播放或暂停">
+        <svg class="play-glyph" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        <svg class="pause-glyph" viewBox="0 0 24 24"><path d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+      </button>
+      <button id="next" title="下一首" aria-label="下一首"><svg viewBox="0 0 24 24"><path d="M15 6h2v12h-2zM6 6v12l8-6z"/></svg></button>
+      <span class="sep"></span>
+      <button id="browse" title="浏览模式（前置可交互 ⌥⌘B）" aria-label="切换浏览模式"><svg viewBox="0 0 24 24"><path d="M12 5c-5 0-9 4.5-9 7s4 7 9 7 9-4.5 9-7-4-7-9-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg></button>
+      <button id="exit" title="退出壁纸模式（⌥⌘W）" aria-label="退出壁纸模式"><svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg></button>
+    </div>
   </div>
   <script>
     (function(){
       var api = window.desktopOverlay;
-      function on(id, fn){
-        var el = document.getElementById(id);
-        if (el) el.addEventListener('click', function(e){ e.preventDefault(); fn(); });
+      function on(id, fn){ var el = document.getElementById(id); if (el) el.addEventListener('click', function(e){ e.preventDefault(); fn(); }); }
+      if (!api) return;
+      on('prev', function(){ api.hudAction('prevTrack'); });
+      on('play', function(){ api.hudAction('togglePlay'); });
+      on('next', function(){ api.hudAction('nextTrack'); });
+      on('browse', function(){ api.hudBrowsingToggle(); });
+      on('exit', function(){ api.hudExit(); });
+      if (typeof api.onHudState === 'function') {
+        api.onHudState(function(s){ document.body.classList.toggle('browsing', !!(s && s.browsing)); });
       }
-      if (api){
-        on('prev', function(){ api.hudAction('prevTrack'); });
-        on('play', function(){ api.hudAction('togglePlay'); });
-        on('next', function(){ api.hudAction('nextTrack'); });
-        on('browse', function(){ api.hudBrowsingToggle(); });
-        on('exit', function(){ api.hudExit(); });
-        if (typeof api.onHudState === 'function') {
-          api.onHudState(function(s){
-            document.body.classList.toggle('browsing', !!(s && s.browsing));
-          });
-        }
-        if (typeof api.onHudNowPlaying === 'function') {
-          api.onHudNowPlaying(function(s){
-            window.__hudNowPlaying = s || {};
-            var t = (s && s.title) ? String(s.title) : '';
-            var a = (s && s.artist) ? String(s.artist) : '';
-            var npT = document.getElementById('np-t');
-            var npA = document.getElementById('np-a');
-            var np = document.getElementById('np');
-            if (npT) npT.textContent = t || 'Mineradio';
-            if (npA) npA.textContent = a;
-            if (np) np.classList.toggle('empty', !t);
-            document.body.classList.toggle('playing', !!(s && s.playing));
-          });
-        }
+      if (typeof api.onHudNowPlaying === 'function') {
+        api.onHudNowPlaying(function(s){
+          window.__hudNowPlaying = s || {};
+          var t = (s && s.title) ? String(s.title) : '';
+          var a = (s && s.artist) ? String(s.artist) : '';
+          var cover = (s && s.cover) ? String(s.cover) : '';
+          document.getElementById('np-t').textContent = t || 'Mineradio';
+          document.getElementById('np-a').textContent = a;
+          document.getElementById('meta').classList.toggle('empty', !t);
+          var art = document.getElementById('art'), img = document.getElementById('art-img');
+          if (cover) { img.src = cover; art.classList.add('has'); }
+          else { img.removeAttribute('src'); art.classList.remove('has'); }
+          document.body.classList.toggle('playing', !!(s && s.playing));
+        });
       }
     })();
   </script>

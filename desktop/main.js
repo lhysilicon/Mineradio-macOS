@@ -1205,8 +1205,8 @@ function createMacWallpaperHud() {
     return macWallpaperHud;
   }
   macWallpaperHud = new BrowserWindow({
-    width: 420,
-    height: 64,
+    width: 460,
+    height: 74,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -1515,12 +1515,18 @@ async function runMacWallpaperSelfTest() {
     r.rendererDeepAfterRestore = await readDeep();
     // --- Now-playing relay (Round 2): main-window renderer → main → HUD pill ---
     try {
-      await mainWindow.webContents.executeJavaScript("window.desktopWindow.macHudNowPlaying({title:'SelfTest Track', artist:'Tester', playing:true})");
-      await new Promise((res) => setTimeout(res, 280));
+      const cover = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      await mainWindow.webContents.executeJavaScript('window.desktopWindow.macHudNowPlaying({title:"光年之外", artist:"邓紫棋 G.E.M.", playing:true, cover:"' + cover + '"})');
+      await new Promise((res) => setTimeout(res, 300));
       r.hudNowPlaying = (macWallpaperHud && !macWallpaperHud.isDestroyed())
         ? await macWallpaperHud.webContents.executeJavaScript('(window.__hudNowPlaying || null)')
         : null;
-      r.hudNowPlayingOk = !!(r.hudNowPlaying && r.hudNowPlaying.title === 'SelfTest Track' && r.hudNowPlaying.playing === true);
+      r.hudNowPlayingOk = !!(r.hudNowPlaying && r.hudNowPlaying.title === '光年之外' && r.hudNowPlaying.playing === true && r.hudNowPlaying.cover);
+      // Capture the styled pill (with art + title + playing state) for visual review.
+      if (macWallpaperHud && !macWallpaperHud.isDestroyed()) {
+        const npImg = await macWallpaperHud.webContents.capturePage();
+        require('fs').writeFileSync(out.replace(/\.json$/, '') + '-hud-np.png', npImg.toPNG());
+      }
     } catch (e) { r.hudNowPlayingErr = e.message; }
     setMacBrowsingMode(true);
     await new Promise((res) => setTimeout(res, 250));
@@ -1882,8 +1888,11 @@ ipcMain.handle('mineradio-wallpaper-hud-exit', () => {
 });
 // Now-playing relay: main-window renderer → HUD pill (title + play/pause state).
 ipcMain.handle('mineradio-mac-hud-nowplaying', (_e, payload) => {
+  // Only allow http(s)/data:image cover URLs (the HUD loads it as <img src>).
+  const rawCover = payload && typeof payload.cover === 'string' ? payload.cover : '';
+  const cover = /^(https?:\/\/|data:image\/)/i.test(rawCover) ? rawCover : '';
   lastMacHudNowPlaying = (payload && typeof payload === 'object') ? {
-    title: String(payload.title || ''), artist: String(payload.artist || ''), playing: !!payload.playing,
+    title: String(payload.title || ''), artist: String(payload.artist || ''), playing: !!payload.playing, cover,
   } : null;
   if (macWallpaperHud && !macWallpaperHud.isDestroyed() && lastMacHudNowPlaying) {
     try { macWallpaperHud.webContents.send('mineradio-wallpaper-hud-nowplaying', lastMacHudNowPlaying); } catch (e) {}

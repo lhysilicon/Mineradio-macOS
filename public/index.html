@@ -26396,7 +26396,7 @@ function applyWallpaperModeState(force) {
 }
 function macHudPayload() {
   var meta = (typeof currentDesktopSongMeta === 'function') ? currentDesktopSongMeta() : {};
-  return { title: (meta && meta.title) || '', artist: (meta && meta.artist) || '', playing: !!playing };
+  return { title: (meta && meta.title) || '', artist: (meta && meta.artist) || '', cover: (meta && meta.cover) || '', playing: !!playing };
 }
 // Push now-playing to the macOS wallpaper control pill. Gated by the caller on the
 // mac-wallpaper-on body class, so it is a no-op in normal app use. Throttled by key.
@@ -26404,7 +26404,7 @@ function pushMacHudState(force) {
   var api = getDesktopWindowApi();
   if (!api || typeof api.macHudNowPlaying !== 'function') return;
   var payload = macHudPayload();
-  var key = payload.title + '|' + payload.artist + '|' + payload.playing;
+  var key = payload.title + '|' + payload.artist + '|' + payload.cover + '|' + payload.playing;
   if (!force && key === desktopOverlayPushState.lastMacHudKey) return;
   desktopOverlayPushState.lastMacHudKey = key;
   api.macHudNowPlaying(payload).catch(function(){});

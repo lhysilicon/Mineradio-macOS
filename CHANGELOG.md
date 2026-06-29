@@ -65,6 +65,11 @@ business logic was altered.
 - `public/wallpaper-hud.html` + `public/index.html` + `desktop/*`: the control pill now shows
   the **current track + play/pause state** (relayed main-window → main → HUD; gated on
   wallpaper mode so it is a no-op otherwise). Self-test asserts the relay end-to-end.
+- `public/wallpaper-hud.html` + `desktop/main.js` + `public/index.html`: **visual refinement** of the control pill —
+  album-art thumbnail (with an animated equalizer overlay while playing), two-line title/
+  artist, refined frosted-glass material + layered shadow, an accent-filled play/pause button,
+  and entrance / press micro-animations. Now-playing payload carries a sanitized cover URL
+  (http(s)/data:image only). Reviewed visually via a self-test screen capture of the pill.
 - `desktop/main.js` + `server.js`: the in-app updater no longer offers/opens a Windows
   `.exe` installer on macOS; installer asset extension is platform-aware.
 - `desktop/main.js`: added a macOS-only role-based application menu (keeps Cmd+C/V/X/A
