@@ -2195,17 +2195,37 @@ if (!gotSingleInstanceLock) {
       registerMacWallpaperShortcuts();
       registerMacWallpaperPowerSignals();
     }
+    // Re-fitting the macOS wallpaper on display-metrics-changed must NOT toggle simple-
+    // fullscreen unconditionally: setSimpleFullScreen(false);true itself changes the screen's
+    // workArea/menu-bar geometry, which re-fires display-metrics-changed — twice per run — so a
+    // single event used to cascade geometrically (1->2->4->8...), flooding the main process
+    // event loop and making the window stutter ("抽搐"). Fix: (1) re-entrancy guard so the
+    // events our own toggle emits are ignored, (2) debounce to coalesce real bursts, and
+    // (3) idempotency — only re-fit when the window no longer covers the target display.
+    let macDmRefitting = false;   // true while our own toggle is flushing its metrics events
+    let macDmRefitTimer = null;   // debounce timer for genuine display changes
     screen.on('display-metrics-changed', () => {
+      if (macDmRefitting) return; // ignore the metrics events caused by our own re-fit toggle
       positionDesktopLyricsWindow();
       positionWallpaperWindow();
-      // Keep the macOS wallpaper full-bleed on the primary display and re-assert its
-      // window level after a resolution / display-arrangement change (the level can be
-      // dropped by the WindowServer on such events, breaking the behind-icons illusion).
       if (macWallpaperActive && mainWindow && !mainWindow.isDestroyed()) {
-        // Re-fit the full-bleed simple-fullscreen to the new screen size, then re-assert level.
-        try { mainWindow.setSimpleFullScreen(false); mainWindow.setSimpleFullScreen(true); } catch (e) {}
-        if (macBrowsingActive) applyMacBrowsingLevel(); else applyMacAmbientLevel();
-        positionMacWallpaperHud();
+        if (macDmRefitTimer) clearTimeout(macDmRefitTimer);
+        macDmRefitTimer = setTimeout(() => {
+          macDmRefitTimer = null;
+          if (!macWallpaperActive || !mainWindow || mainWindow.isDestroyed()) return;
+          const disp = screen.getPrimaryDisplay().bounds;
+          const b = mainWindow.getBounds();
+          const fits = b.x === disp.x && b.y === disp.y && b.width === disp.width && b.height === disp.height;
+          macDmRefitting = true; // suppress the re-entrant display-metrics our toggle will emit
+          try {
+            // Only toggle when the window actually no longer covers the display (a real
+            // resolution / arrangement change) — never for a no-op metrics change.
+            if (!fits) { mainWindow.setSimpleFullScreen(false); mainWindow.setSimpleFullScreen(true); }
+            if (macBrowsingActive) applyMacBrowsingLevel(); else applyMacAmbientLevel();
+            positionMacWallpaperHud();
+          } catch (e) {}
+          setTimeout(() => { macDmRefitting = false; }, 600); // release after the toggle's events flush
+        }, 250);
       }
       scheduleWindowStateSend(mainWindow);
     });

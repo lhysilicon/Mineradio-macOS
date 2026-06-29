@@ -6,6 +6,24 @@ Unofficial macOS adaptation of XxHuberrr/Mineradio (GPL-3.0). Changed files and 
 below per GPL-3.0 §5(a). Only macOS adaptation / bug fixes; no platform-independent
 business logic was altered.
 
+### 2026-06-30
+- `desktop/main.js`: fixed a **wallpaper-mode stutter / "抽搐" (twitch)**. The
+  `display-metrics-changed` handler re-fit the full-bleed wallpaper with
+  `setSimpleFullScreen(false); setSimpleFullScreen(true)`, but toggling simple-
+  fullscreen itself changes the screen's work-area / menu-bar geometry, which
+  re-fires `display-metrics-changed` — twice per run — so a single event cascaded
+  geometrically (1→2→4→8…) and saturated the main-process event loop, making the
+  wallpaper visibly stutter. Measured with an event-loop-lag probe: wallpaper-mode
+  lag went from ~1 ms to ~1.9 s average (≈6 s peak), with 412 `resize` + 15
+  `display-metrics-changed` events fired in an 8 s still hold. Fix: a re-entrancy
+  guard (ignore the metrics events our own toggle emits), a debounce to coalesce
+  real bursts, and idempotency (only re-fit when the window no longer covers the
+  target display). After the fix: ~6 ms lag, 24 resizes, 1 `display-metrics-changed`
+  over the same window. A controlled A/B isolated the self-triggering re-fit as the
+  sole cause — the window constraints (`simpleFullScreen` + desktop level + all-
+  spaces), the HUD, and the tray each stayed ~1 ms on their own. macOS-only; the
+  Windows path is unchanged.
+
 ### 2026-06-29
 - `desktop/main.js`: gate the Windows `use-angle=d3d11` GPU switch to win32 so macOS
   uses the default Metal ANGLE backend — fixes a hard black-splash freeze on macOS
