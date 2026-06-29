@@ -23,9 +23,11 @@ business logic was altered.
   via a small koffi FFI bridge that sets the live window's `NSWindow.level` (no
   destroy/recreate, so playback/login state is preserved). Plash-style toggle: ambient
   (behind icons, click-through) ⇄ browsing (raised, interactive) ⇄ app window. Controls:
-  a visible wallpaper button in the window title bar, an always-reachable menu-bar tray
-  (enter/exit, browsing toggle, prev/play/next, bring-to-front — usable even while the app
-  is sunk behind the icons), a "壁纸" application-menu submenu, and global hotkeys ⌥⌘W
+  a visible wallpaper button in the window title bar, plus — only while in wallpaper mode —
+  a menu-bar tray (enter/exit, browsing toggle, prev/play/next, bring-to-front) that stays
+  reachable even when the app is sunk behind the icons; the tray is created on entering
+  wallpaper mode and removed on exit, so normal window use keeps the menu bar clean. Also a
+  "壁纸" application-menu submenu, and global hotkeys ⌥⌘W
   (enter/exit wallpaper) and ⌥⌘B (browsing mode). The window sits one level below the
   desktop-ICON level (`CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) - 1`): above the
   system wallpaper picture so it is visible as the wallpaper, below the icons so they stay

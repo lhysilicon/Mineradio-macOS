@@ -1175,6 +1175,7 @@ function enterMacWallpaperMode() {
     mainWindow.setResizable(false);
     mainWindow.setMovable(false);
     applyMacAmbientLevel();
+    createMacTray(); // menu-bar control appears only while in wallpaper mode
     updateMacWallpaperMenu();
     sendMacWallpaperModeState();
     return true;
@@ -1213,6 +1214,7 @@ function exitMacWallpaperMode() {
     macWallpaperActive = false;
     macBrowsingActive = false;
     macWallpaperSaved = null;
+    destroyMacTray(); // back to a normal window → remove the menu-bar icon
     updateMacWallpaperMenu();
     sendMacWallpaperModeState();
   }
@@ -1308,6 +1310,10 @@ function updateMacTray() {
   } catch (e) {}
 }
 
+// The menu-bar tray exists ONLY while in wallpaper mode — that's when the window is
+// behind the icons / click-through and needs an always-reachable control. In normal
+// window mode the app's own window (+ titlebar button / ⌥⌘W / 壁纸 menu) is the UI, so
+// we don't clutter the menu bar with a persistent status icon.
 function createMacTray() {
   if (process.platform !== 'darwin' || macTray) return;
   try {
@@ -1316,6 +1322,12 @@ function createMacTray() {
     macTray.setToolTip('Mineradio');
     updateMacTray();
   } catch (e) { console.warn('tray init failed:', e && e.message); }
+}
+
+function destroyMacTray() {
+  if (!macTray) return;
+  try { macTray.destroy(); } catch (e) {}
+  macTray = null;
 }
 
 // Env-guarded integration self-test (no production impact). Exercises the REAL
@@ -1743,6 +1755,7 @@ async function createWindow() {
     macWallpaperActive = false;
     macBrowsingActive = false;
     macWallpaperSaved = null;
+    destroyMacTray(); // don't leave an orphaned menu-bar icon if closed mid-wallpaper-mode
     updateMacWallpaperMenu();
     mainWindow = null;
   });
@@ -1786,7 +1799,7 @@ if (!gotSingleInstanceLock) {
     // state). On Windows the frameless window keeps Electron's default (auto-hidden) menu,
     // so leave it untouched there.
     if (process.platform === 'darwin') {
-      createMacTray();
+      // No tray at startup — it is created on entering wallpaper mode and destroyed on exit.
       updateMacWallpaperMenu();
       registerMacWallpaperShortcuts();
     }
