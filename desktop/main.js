@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { execFile, spawn } = require('child_process');
 const macWindowLevel = require('./mac-window-level');
+const { macWallpaperPowerTransition } = require('./wallpaper-power');
 
 let mainWindow = null;
 let localServer = null;
@@ -37,7 +38,8 @@ let macWallpaperHudLoaded = false;    // HUD page finished loading (did-finish-l
 // deep-background power path). Occlusion-by-fullscreen-app was MEASURED unreliable for an
 // all-spaces/desktop-level window (occlusionState stays "visible"), so we only act on the
 // signals that are reliable. lastWallpaperPowerState is exposed for the self-test.
-let macWallpaperPowerIdle = false;
+// (The idle flag itself is delivered to the renderer via IPC, not held in a
+//  module variable; the self-test reads lastWallpaperPowerState.)
 let lastWallpaperPowerState = null;
 // Last now-playing pushed by the renderer; cached so a freshly-created HUD shows the
 // current track immediately instead of waiting for the next renderer push.
@@ -1326,23 +1328,37 @@ function destroyMacWallpaperHud() {
 // mode (the power-event handlers gate on macWallpaperActive).
 function setWallpaperPowerIdle(on, reason) {
   on = !!on;
-  macWallpaperPowerIdle = on;
   lastWallpaperPowerState = { idle: on, reason: reason || '' };
   if (mainWindow && !mainWindow.isDestroyed()) {
     try { mainWindow.webContents.send('mineradio-wallpaper-power', { idle: on, reason: reason || '' }); } catch (e) {}
   }
 }
 
+// Tracks whether the screen is currently locked, so a `resume` (wake) that fires
+// while still locked re-asserts idle instead of resuming the visualizer behind the
+// lock screen. Updated only by the power-signal handlers below.
+let macWallpaperScreenLocked = false;
+
 function registerMacWallpaperPowerSignals() {
   if (process.platform !== 'darwin') return;
-  // "Provably unseen" → idle. Only while in wallpaper mode (otherwise the normal window's
-  // own visibility/minimize logic already governs throttling).
-  const idleIfWallpaper = (reason) => () => { if (macWallpaperActive) setWallpaperPowerIdle(true, reason); };
-  const resume = (reason) => () => setWallpaperPowerIdle(false, reason);
-  try { powerMonitor.on('lock-screen', idleIfWallpaper('lock-screen')); } catch (e) {}
-  try { powerMonitor.on('unlock-screen', resume('unlock-screen')); } catch (e) {}
-  try { powerMonitor.on('suspend', idleIfWallpaper('suspend')); } catch (e) {}
-  try { powerMonitor.on('resume', resume('resume')); } catch (e) {}
+  // "Provably unseen" → idle. The decision (incl. resume-while-locked) lives in the
+  // pure, unit-tested macWallpaperPowerTransition; here we wire it to the real events.
+  // SET-true is only meaningful in wallpaper mode (otherwise the normal window's own
+  // visibility/minimize logic governs throttling), so we gate it on macWallpaperActive;
+  // CLEAR (false) is always safe to apply.
+  const handle = (event) => () => {
+    const next = macWallpaperPowerTransition(event, macWallpaperScreenLocked);
+    macWallpaperScreenLocked = next.screenLocked;
+    if (next.idle === true) {
+      if (macWallpaperActive) setWallpaperPowerIdle(true, event);
+    } else if (next.idle === false) {
+      setWallpaperPowerIdle(false, event);
+    }
+  };
+  try { powerMonitor.on('lock-screen', handle('lock-screen')); } catch (e) {}
+  try { powerMonitor.on('unlock-screen', handle('unlock-screen')); } catch (e) {}
+  try { powerMonitor.on('suspend', handle('suspend')); } catch (e) {}
+  try { powerMonitor.on('resume', handle('resume')); } catch (e) {}
 }
 
 function enterMacWallpaperMode() {
@@ -1655,102 +1671,11 @@ async function runMacWallpaperHoldTest() {
   if (process.env.MINERADIO_WALLPAPER_HOLD_QUIT !== '0') setTimeout(() => app.quit(), 200);
 }
 
-// Env-guarded MEASUREMENT (no production impact): does AppKit report a reliable
-// occlusionState for the all-spaces / desktop-level wallpaper window when it is fully
-// covered? This is the linchpin open question for the energy controller — measure
-// before building it. Enters ambient, reads occlusion, covers the screen with an
-// opaque normal-level window, re-reads, uncovers, re-reads; writes a verdict JSON.
-async function runMacOcclusionProbe() {
-  const out = process.env.MINERADIO_OCCLUSION_OUT || '/tmp/mineradio-occlusion-probe.json';
-  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 'occlusion probe timeout'); } catch (e) {} process.exit(3); }, 20000);
-  const r = {};
-  let cover = null;
-  try {
-    enterMacWallpaperMode();
-    await sleep(600);
-    r.ambientLevel = macWindowLevel.getLevel(mainWindow);
-    r.occ_before = macWindowLevel.getOcclusionState(mainWindow);
-    r.visible_before = macWindowLevel.isVisibleByOcclusion(mainWindow);
-    const b = screen.getPrimaryDisplay().bounds;
-    cover = new BrowserWindow({ x: b.x, y: b.y, width: b.width, height: b.height, frame: false, backgroundColor: '#101010', hasShadow: false, skipTaskbar: true, show: false });
-    cover.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height }, false);
-    cover.show();
-    cover.focus();
-    await sleep(1100);
-    r.occ_covered = macWindowLevel.getOcclusionState(mainWindow);
-    r.visible_covered = macWindowLevel.isVisibleByOcclusion(mainWindow);
-    if (cover && !cover.isDestroyed()) cover.close();
-    cover = null;
-    await sleep(800);
-    r.occ_after = macWindowLevel.getOcclusionState(mainWindow);
-    r.visible_after = macWindowLevel.isVisibleByOcclusion(mainWindow);
-    r.RELIABLE = (r.visible_before === true && r.visible_covered === false && r.visible_after === true);
-  } catch (e) {
-    r.error = e.message; r.stack = e.stack;
-  }
-  try { if (cover && !cover.isDestroyed()) cover.close(); } catch (e) {}
-  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
-  setTimeout(() => app.quit(), 200);
-}
-
-// Env-guarded diagnostic: does the wallpaper window actually cover the full screen, and
-// does the renderer fill it? Reports displays + window bounds + renderer viewport/canvas.
-async function runMacFullscreenProbe() {
-  const out = process.env.MINERADIO_FULLSCREEN_OUT || '/tmp/mineradio-fullscreen-probe.json';
-  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 't'); } catch (e) {} process.exit(3); }, 20000);
-  const r = {};
-  try {
-    r.displays = screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor, internal: d.internal }));
-    r.primary = screen.getPrimaryDisplay().bounds;
-    enterMacWallpaperMode();
-    await sleep(700);
-    r.winBounds = mainWindow.getBounds();
-    r.winFillsPrimary = JSON.stringify(r.winBounds) === JSON.stringify(r.primary);
-    r.renderer = await mainWindow.webContents.executeJavaScript('({iw:innerWidth, ih:innerHeight, dpr:window.devicePixelRatio, cw:((document.querySelector("canvas")||{}).width)||0, ch:((document.querySelector("canvas")||{}).height)||0})');
-    // --- candidate fix: Electron setSimpleFullScreen (covers menu-bar/dock zones) ---
-    mainWindow.setSimpleFullScreen(true);
-    await sleep(600);
-    r.isSimpleFS = mainWindow.isSimpleFullScreen();
-    // setSimpleFullScreen may reset level/space/click-through → re-assert ambient.
-    macWindowLevel.setLevel(mainWindow, macWindowLevel.desktopLevel());
-    try { mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (e) {}
-    try { mainWindow.setIgnoreMouseEvents(true, { forward: true }); } catch (e) {}
-    await sleep(400);
-    r.winBoundsAfter = mainWindow.getBounds();
-    r.winFillsPrimaryAfter = JSON.stringify(r.winBoundsAfter) === JSON.stringify(r.primary);
-    r.levelAfter = macWindowLevel.getLevel(mainWindow);
-    r.rendererAfter = await mainWindow.webContents.executeJavaScript('({iw:innerWidth, ih:innerHeight})');
-    mainWindow.setSimpleFullScreen(false);
-    exitMacWallpaperMode();
-  } catch (e) { r.error = e.message; r.stack = e.stack; }
-  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
-  setTimeout(() => app.quit(), 200);
-}
-
-// Env-guarded: does the full-bleed (simple-fullscreen + desktop-level) main window
-// actually render, or does capturePage hang / come back blank? Timeout-guarded.
-async function runMacCaptureProbe() {
-  const out = process.env.MINERADIO_CAPTURE_OUT || '/tmp/mineradio-capture-probe.json';
-  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 't'); } catch (e) {} process.exit(3); }, 16000);
-  const r = {};
-  try {
-    enterMacWallpaperMode();
-    await sleep(900);
-    r.winBounds = mainWindow.getBounds();
-    const cap = await Promise.race([
-      mainWindow.webContents.capturePage().then((img) => ({ png: img.toPNG() })),
-      sleep(5000).then(() => ({ timeout: true })),
-    ]);
-    if (cap.timeout) r.captureTimedOut = true;
-    else { require('fs').writeFileSync(out.replace(/\.json$/, '') + '.png', cap.png); r.captureBytes = cap.png.length; }
-    exitMacWallpaperMode();
-  } catch (e) { r.error = e.message; r.stack = e.stack; }
-  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
-  setTimeout(() => app.quit(), 200);
-}
+// NOTE: the env-guarded measurement probes (occlusion / fullscreen / capture) were
+// removed once their questions were settled and baked into the code (occlusion is
+// unreliable for desktop-level windows; the window fills the primary display via
+// simple-fullscreen; capturePage works). The integration self-test
+// (runMacWallpaperSelfTest) remains as the live regression guard. History: git.
 
 function closeOverlayWindows() {
   closeDesktopLyricsWindow();
@@ -2234,9 +2159,6 @@ if (!gotSingleInstanceLock) {
     await createWindow();
     if (process.env.MINERADIO_WALLPAPER_SELFTEST === '1') runMacWallpaperSelfTest();
     else if (process.env.MINERADIO_WALLPAPER_HOLDTEST === '1') runMacWallpaperHoldTest();
-    else if (process.env.MINERADIO_OCCLUSION_PROBE === '1') runMacOcclusionProbe();
-    else if (process.env.MINERADIO_FULLSCREEN_PROBE === '1') runMacFullscreenProbe();
-    else if (process.env.MINERADIO_CAPTURE_PROBE === '1') runMacCaptureProbe();
   });
 
   app.on('activate', () => {

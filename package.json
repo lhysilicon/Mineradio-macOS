@@ -33,6 +33,7 @@
     },
     "files": [
       "desktop/**/*",
+      "!desktop/**/*.test.js",
       "public/**/*",
       "build/**/*",
       "server.js",
