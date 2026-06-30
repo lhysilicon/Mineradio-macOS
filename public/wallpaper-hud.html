@@ -30,9 +30,13 @@
     box-shadow:0 14px 44px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.09), 0 0 0 .5px rgba(0,0,0,.45);
     backdrop-filter:blur(34px) saturate(1.7);
     -webkit-backdrop-filter:blur(34px) saturate(1.7);
-    animation:rise .34s cubic-bezier(.2,.85,.25,1) both;
+    animation:rise .34s cubic-bezier(.2,.85,.25,1) backwards;
+    transition:opacity .5s ease;
     overflow:hidden;
   }
+  /* Idle-fade: when the pointer hasn't been near the pill for a while, dim it so it stops
+     drawing the eye over the wallpaper; any hover or track change brings it right back. */
+  body.hud-idle .pill{opacity:.18}
   /* album art */
   .art{flex:0 0 auto;width:46px;height:46px;border-radius:13px;position:relative;overflow:hidden;
     background:linear-gradient(135deg,rgba(124,199,255,.28),rgba(155,140,255,.22));
@@ -76,7 +80,7 @@
   .sep{width:1px;height:20px;background:var(--line);margin:0 5px;-webkit-app-region:no-drag}
   #browse,#exit{width:30px;height:30px;color:var(--ink-dim)}
   #browse:hover{color:#fff}
-  body.browsing #browse{color:var(--accent);background:rgba(124,199,255,.16)}
+  body.interacting #browse{color:var(--accent);background:rgba(124,199,255,.16)}
   #exit:hover{background:rgba(255,110,110,.18);color:#ffd9d9}
 </style>
 </head>
@@ -99,7 +103,7 @@
       </button>
       <button id="next" title="下一首" aria-label="下一首"><svg viewBox="0 0 24 24"><path d="M15 6h2v12h-2zM6 6v12l8-6z"/></svg></button>
       <span class="sep"></span>
-      <button id="browse" title="浏览模式（前置可交互 ⌥⌘B）" aria-label="切换浏览模式"><svg viewBox="0 0 24 24"><path d="M12 5c-5 0-9 4.5-9 7s4 7 9 7 9-4.5 9-7-4-7-9-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg></button>
+      <button id="browse" title="原地互动（直接点壁纸 · 图标保留 ⌥⌘B）" aria-label="切换原地互动"><svg viewBox="0 0 24 24"><path d="M12 5c-5 0-9 4.5-9 7s4 7 9 7 9-4.5 9-7-4-7-9-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-2a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg></button>
       <button id="exit" title="退出壁纸模式（⌥⌘W）" aria-label="退出壁纸模式"><svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg></button>
     </div>
   </div>
@@ -113,8 +117,20 @@
       on('next', function(){ api.hudAction('nextTrack'); });
       on('browse', function(){ api.hudBrowsingToggle(); });
       on('exit', function(){ api.hudExit(); });
+      // Keep the pill awake while idle-fade is armed, and re-arm a fresh fade timer.
+      var idleTimer = null;
+      function wake(){
+        document.body.classList.remove('hud-idle');
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(function(){ document.body.classList.add('hud-idle'); }, 6000);
+      }
+      ['mousemove','mousedown','mouseenter','wheel'].forEach(function(ev){ window.addEventListener(ev, wake, true); });
+      wake();
       if (typeof api.onHudState === 'function') {
-        api.onHudState(function(s){ document.body.classList.toggle('browsing', !!(s && s.browsing)); });
+        api.onHudState(function(s){
+          document.body.classList.toggle('browsing', !!(s && s.browsing));
+          document.body.classList.toggle('interacting', !!(s && s.interacting));
+        });
       }
       if (typeof api.onHudNowPlaying === 'function') {
         api.onHudNowPlaying(function(s){
@@ -129,6 +145,7 @@
           if (cover) { img.src = cover; art.classList.add('has'); }
           else { img.removeAttribute('src'); art.classList.remove('has'); }
           document.body.classList.toggle('playing', !!(s && s.playing));
+          wake(); // a track change should briefly bring the pill back if it had faded
         });
       }
       // Drag the pill anywhere — the window is non-activating, so we move it manually

@@ -44,6 +44,9 @@ contextBridge.exposeInMainWorld('desktopWindow', {
   macWallpaperToggle: () => ipcRenderer.invoke('mineradio-mac-wallpaper-toggle'),
   macWallpaperSet: (enabled) => ipcRenderer.invoke('mineradio-mac-wallpaper-set', !!enabled),
   macBrowsingToggle: () => ipcRenderer.invoke('mineradio-mac-browsing-toggle'),
+  // Renderer reports interaction while in-place interact is on → main resets its idle
+  // auto-restore timer so an active session is never dropped out from under the user.
+  macInteractPing: () => ipcRenderer.invoke('mineradio-wallpaper-interact-ping'),
   macHudNowPlaying: (payload) => ipcRenderer.invoke('mineradio-mac-hud-nowplaying', payload || {}),
   onWallpaperModeChange: (callback) => {
     const listener = (_event, state) => callback(state || {});

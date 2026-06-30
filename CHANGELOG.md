@@ -6,23 +6,78 @@ Unofficial macOS adaptation of XxHuberrr/Mineradio (GPL-3.0). Changed files and 
 below per GPL-3.0 §5(a). Only macOS adaptation / bug fixes; no platform-independent
 business logic was altered.
 
+### 2026-07-01 — full app inside the live wallpaper, plus polish
+- **The whole UI now works inside the wallpaper.** On top of clicking / dragging / scrolling the live
+  wallpaper, bare-desktop **hovers** are forwarded too (time-throttled so they never flood the renderer),
+  so sliding the cursor to the screen edges reveals the playlist drawer, the player controls and the
+  search bar right there — the full interface, with your desktop icons still visible. (Keyboard entry —
+  search typing, login — is the one thing macOS won't forward to a behind-icons window; use the menu-bar
+  "前置浏览" to lift the window briefly, then `Esc` to sink back.)
+- **Clicking the wallpaper only plays — it no longer nudges the 3D view**; a deliberate drag still orbits,
+  and on release the view eases back to front so the wallpaper stays steady. (Fixes accidental view tilt
+  on what was meant to be a click.)
+- **Wallpaper ≠ fullscreen, made explicit.** The wallpaper button / `⌥⌘W` sink the app to the desktop
+  (icons kept); the green traffic-light / `F` / `⌃⌘F` are normal macOS fullscreen. (An interim experiment
+  that routed wallpaper mode through native fullscreen was reverted — a foreground fullscreen hides the
+  icons, defeating the point of a wallpaper.)
+- **Smoother:** the live edge-glow is a one-shot instead of a per-frame loop, drag events are coalesced to
+  display rate, and the wallpaper renders at a slightly reduced pixel budget for a steadier frame rate as a
+  full-screen background. macOS-only; the Windows path is unchanged.
+
 ### 2026-06-30
-- `desktop/main.js`: fixed a **wallpaper-mode stutter / "抽搐" (twitch)**. The
-  `display-metrics-changed` handler re-fit the full-bleed wallpaper with
-  `setSimpleFullScreen(false); setSimpleFullScreen(true)`, but toggling simple-
-  fullscreen itself changes the screen's work-area / menu-bar geometry, which
-  re-fires `display-metrics-changed` — twice per run — so a single event cascaded
-  geometrically (1→2→4→8…) and saturated the main-process event loop, making the
-  wallpaper visibly stutter. Measured with an event-loop-lag probe: wallpaper-mode
-  lag went from ~1 ms to ~1.9 s average (≈6 s peak), with 412 `resize` + 15
-  `display-metrics-changed` events fired in an 8 s still hold. Fix: a re-entrancy
-  guard (ignore the metrics events our own toggle emits), a debounce to coalesce
-  real bursts, and idempotency (only re-fit when the window no longer covers the
-  target display). After the fix: ~6 ms lag, 24 resizes, 1 `display-metrics-changed`
-  over the same window. A controlled A/B isolated the self-triggering re-fit as the
-  sole cause — the window constraints (`simpleFullScreen` + desktop level + all-
-  spaces), the HUD, and the tray each stayed ~1 ms on their own. macOS-only; the
-  Windows path is unchanged.
+- `desktop/main.js`: **make native fullscreen actually engage.** The main window defaulted to
+  non-fullscreenable, so `setFullScreen(true)` was a silent no-op — pressing the fullscreen button
+  hid the titlebar button but never actually went fullscreen (and the native green button only ever
+  *zoomed*, never entered a fullscreen Space). Now `setFullScreenable(true)` is applied right before
+  entering, so native fullscreen actually engages (verified by an instrumented probe: the window's
+  `isFullScreen()` now flips true on enter and false on exit). Exit via Esc or the green button.
+- `public/index.html`: **two interaction bug fixes.** (1) Home screen scrolling: the desktop home
+  shell had no scroll container in its base layout (only at phone widths), so when its content was
+  taller than the box — short window, or with the control bar shown — the lower cards/tiles were
+  clipped and the wheel did nothing; fixed with `grid-template-rows:auto minmax(0,1fr)` +
+  `overflow-y:auto`, so it scrolls when needed and is unchanged when it fits. (2) The new bottom-bar
+  edge-reveal no longer fires when the 3D shelf is in stage mode (the screen bottom is the stage there),
+  so the control bar can't pop up over and steal clicks from the bottom-row stage cards — the handle
+  and hovering the bar still reveal it.
+- `public/index.html`: **smoother window resizing.** Dragging the window to resize was janky because
+  every resize event reallocated the GPU buffer and regenerated the frosted-glass filters every frame.
+  Now the cheap camera aspect updates every frame (proportions stay correct, the picture just softens
+  briefly) while the canvas — CSS-pinned to 100% — stretches continuously; the expensive
+  `renderer.setSize` + glass-map regeneration are debounced to fire once ~150ms after you stop, so the
+  drag glides and snaps crisp on release (no per-frame stutter, no stepped/"hard" resolution jumps).
+  One-shot callers (fullscreen toggles) keep their original immediate+catch-up path.
+- `public/index.html`: **interaction smoothness pass.** The bottom player control bar now reveals
+  the official way — with auto-hide enabled, sliding the mouse toward the bottom edge of the screen
+  pops the bar back up (previously you had to find the small center handle); a wider keep-band than
+  reveal-band gives clean hysteresis (no edge flicker) and the retract grace was relaxed (70ms→300ms)
+  so the bar no longer bails the instant the cursor overshoots a button. Plus several jank/GC fixes:
+  the control bar drops a no-op `filter` transition and gains `will-change:transform` (no layer
+  rebuild per reveal); the FX panel open/close keyframes drop a stacked foreground blur over their
+  backdrop blur; the per-pointer-move `Raycaster`/`Vector2` are reused as singletons instead of
+  re-allocated (less GC churn during cursor motion); the search-results dropdown fades in instead of
+  hard-popping; and progress-bar scrubbing updates the visual every frame but throttles the actual
+  audio seek to ~10Hz with an exact commit on release (no re-buffer judder on streamed tracks).
+  Renderer-only — the native macOS red/yellow/green traffic-light fullscreen is unchanged.
+- `desktop/main.js` + `desktop/mac-event-tap.js` (new) + `desktop/mac-desktop-icons.js` (new,
+  dormant crash-recovery only) + `desktop/preload.js` + `public/index.html` +
+  `public/wallpaper-hud.html`: **click the live wallpaper directly, by default, with your desktop
+  icons still visible.** In macOS wallpaper mode the window stays sunk at desktop level (behind the
+  icons) and a LISTEN-ONLY mouse event tap forwards your bare-desktop clicks, drags and scrolls into
+  the visualizer (play songs, orbit/zoom, the 3D shelf) via `sendInputEvent` — so the wallpaper is
+  interactive without lifting the window over your icons and without hiding them. The tap observes
+  mouse events only (never the keyboard) and can never modify or inject input; it forwards a click
+  only when no app window / Dock / widget / control pill sits on top of that point, so clicking your
+  other apps is never hijacked. Requires a one-time macOS **Input Monitoring** grant (System Settings
+  → Privacy & Security → Input Monitoring → Mineradio); until granted it no-ops and points you there.
+  The macOS **Dock auto-hides** while in wallpaper mode (shows on mouse-approach) and is restored to
+  your prior setting on exit/quit. The earlier "browsing" lift-over-icons mode is kept as a secondary
+  "前置浏览" control (it pauses the tap while the window is raised). Adds no new runtime dependency
+  (reuses the already-bundled `koffi`); fully fail-soft and macOS-only — the Windows WorkerW path is
+  unchanged.
+- UX polish: a one-time "壁纸已可直接操作" hint + a grab cursor and subtle "live" edge-glow while
+  interacting; the control pill gains snap-to-edge, idle-fade, and position memory across app
+  restarts; the dev-locked FX "壁纸模式" toggle stays hidden when the native bridge is available
+  so there is a single clear wallpaper entry point.
 
 ### 2026-06-29
 - `desktop/main.js`: gate the Windows `use-angle=d3d11` GPU switch to win32 so macOS
@@ -52,8 +107,10 @@ business logic was altered.
   on top and uncovered — the older `kCGDesktopWindowLevel - 1` renders beneath the system
   wallpaper on macOS 26 Tahoe and is invisible. macOS-only; the Windows WorkerW path is
   unchanged. On macOS a window cannot be behind the desktop icons AND receive clicks at the
-  same time (the OS routes desktop clicks to Finder), so full interaction goes through the
-  browsing toggle (or the tray controls, which work in either state). Adds the `koffi`
+  same time (the OS routes desktop clicks to Finder), so at this point full interaction went
+  through the browsing toggle / tray controls — *later lifted by the listen-only click-and-hover
+  forwarding tap (see 2026-07-01), which makes the behind-icons wallpaper directly interactive.*
+  Adds the `koffi`
   dependency (prebuilt N-API binary, bundled per-arch; the bridge is fail-soft and no-ops
   if unavailable).
 - `desktop/main.js` + `desktop/overlay-preload.js` + `public/wallpaper-hud.html` (new):

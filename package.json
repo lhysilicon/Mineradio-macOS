@@ -1,7 +1,7 @@
 {
   "name": "mineradio-macos",
   "productName": "Mineradio",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "沉浸式音乐播放器（macOS 非官方 fork）：搜索播放、歌词舞台、粒子视觉和 3D 歌单架。",
   "author": "lhysilicon",
   "main": "desktop/main.js",
@@ -33,7 +33,6 @@
     },
     "files": [
       "desktop/**/*",
-      "!desktop/**/*.test.js",
       "public/**/*",
       "build/**/*",
       "server.js",

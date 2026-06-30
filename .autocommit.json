@@ -1,3 +1,0 @@
-{
-  "verify": "node desktop/wallpaper-power.test.js"
-}

@@ -69,14 +69,28 @@ body.desktop-shell #desktop-titlebar #update-entry::before,
 body.desktop-shell #desktop-titlebar #update-entry::after{display:none}
 body.desktop-shell #desktop-titlebar #visual-guide-btn:hover,
 body.desktop-shell #desktop-titlebar #update-entry:hover{background:rgba(255,83,103,.10);border-color:rgba(255,83,103,.32);color:#fff;transform:translateY(-1px)}
-/* macOS wallpaper-mode entry button: shown only when the native bridge is available. */
+/* macOS wallpaper-mode entry button: floating at the bottom-right (clear of the top-right
+   desktop icons that previously overlapped it), a peer of #fx-fab inside #desktop-window-shell
+   — NOT in the z-500 titlebar context — so modals / overlays occlude it just like the FX FAB.
+   Stacked ~12px above the FX FAB and tracks it up when the playback controls raise the FAB.
+   Shown only when the native bridge is available. */
 #mac-wallpaper-btn{display:none}
-body.desktop-shell #desktop-titlebar #mac-wallpaper-btn{width:30px;height:30px;border-radius:10px;box-shadow:none;background:rgba(4,8,10,.42);border:1px solid rgba(255,255,255,.08);color:rgba(224,250,255,.70);align-items:center;justify-content:center;-webkit-app-region:no-drag;cursor:pointer}
-body.mac-wallpaper-available #desktop-titlebar #mac-wallpaper-btn{display:flex}
+body.desktop-shell #mac-wallpaper-btn{position:fixed;z-index:19;right:24px;bottom:90px;width:46px;height:46px;border-radius:50%;box-shadow:0 14px 40px rgba(0,0,0,.34),inset 0 1px 0 rgba(255,255,255,.14);background:rgba(4,8,10,.62);border:1px solid rgba(255,255,255,.12);color:rgba(224,250,255,.80);align-items:center;justify-content:center;-webkit-app-region:no-drag;pointer-events:auto;cursor:pointer;backdrop-filter:blur(22px) saturate(1.25);-webkit-backdrop-filter:blur(22px) saturate(1.25);transition:bottom .38s cubic-bezier(.16,1,.3,1),transform .24s cubic-bezier(.16,1,.3,1),background .22s,border-color .22s,color .22s,box-shadow .22s,opacity .22s}
+body.mac-wallpaper-available #mac-wallpaper-btn{display:flex}
 body.mac-wallpaper-available #t-wallpaperMode{display:none}
-body.desktop-shell #desktop-titlebar #mac-wallpaper-btn:hover{background:rgba(120,200,255,.12);border-color:rgba(120,200,255,.34);color:#fff;transform:translateY(-1px)}
-body.mac-wallpaper-on #desktop-titlebar #mac-wallpaper-btn{background:rgba(120,200,255,.20);border-color:rgba(120,200,255,.46);color:#dff1ff}
-body.mac-wallpaper-on #desktop-titlebar #mac-wallpaper-btn svg{filter:drop-shadow(0 0 4px rgba(120,200,255,.6))}
+body.desktop-shell #mac-wallpaper-btn:hover{background:rgba(120,200,255,.16);border-color:rgba(120,200,255,.40);color:#fff;transform:translateY(-2px) scale(1.04)}
+body.mac-wallpaper-on #mac-wallpaper-btn{background:rgba(120,200,255,.24);border-color:rgba(120,200,255,.50);color:#dff1ff}
+body.mac-wallpaper-on #mac-wallpaper-btn svg{filter:drop-shadow(0 0 5px rgba(120,200,255,.65))}
+/* Track the FX FAB when the bottom playback controls raise it (FAB 24px -> 126px). */
+body.controls-visible #mac-wallpaper-btn{bottom:192px}
+/* Hide while the FX panel is open OR peeking — it occupies the same bottom-right zone. */
+body:has(#fx-panel.show) #mac-wallpaper-btn,body:has(#fx-panel.peek) #mac-wallpaper-btn{opacity:0;pointer-events:none;transform:translateY(8px) scale(.94)}
+/* In-place interact (⌥⌘B): the wallpaper is directly clickable — signal it. */
+body.mac-wallpaper-interacting #canvas-container canvas{cursor:grab}
+body.mac-wallpaper-interacting #canvas-container canvas:active{cursor:grabbing}
+/* 互动态边缘辉光: 进入时一次性淡入后保持静态(不再每帧合成满屏 opacity 循环 → 更丝滑)。 */
+body.mac-wallpaper-interacting::after{content:"";position:fixed;inset:0;z-index:50;pointer-events:none;opacity:.85;box-shadow:inset 0 0 0 2px rgba(120,200,255,.26),inset 0 0 70px rgba(120,200,255,.10);animation:mrWallpaperLive .9s ease-out 1}
+@keyframes mrWallpaperLive{from{opacity:0}to{opacity:.85}}
 body.desktop-shell #search-area{top:-92px}
 body.desktop-shell #search-area.peek{top:34px}
 body.desktop-shell #search-area.stage-mode.peek{top:32px}
@@ -186,7 +200,8 @@ body.splash-active.splash-revealing #top-right{opacity:1;transition:opacity 1100
 .search-mode-tabs button.active{color:#eafffb;background:rgba(0,245,212,.11);box-shadow:inset 0 0 0 1px rgba(0,245,212,.22),0 8px 24px rgba(0,245,212,.055)}
 body.empty-home-active.diy-mode #search-area:not(.has-results) #search-mode-tabs{display:none}
 #search-results{margin-top:8px;background:rgba(12,12,18,0.55);border:1px solid rgba(255,255,255,0.06);border-radius:14px;max-height:360px;overflow-y:auto;overscroll-behavior:contain;backdrop-filter:blur(40px) saturate(1.4);-webkit-backdrop-filter:blur(40px) saturate(1.4);display:none}
-#search-results.show{display:block;border-color:rgba(var(--fc-accent-rgb),.16);box-shadow:0 18px 54px rgba(0,0,0,.34),0 0 0 1px rgba(var(--fc-accent-rgb),.05)}
+#search-results.show{display:block;border-color:rgba(var(--fc-accent-rgb),.16);box-shadow:0 18px 54px rgba(0,0,0,.34),0 0 0 1px rgba(var(--fc-accent-rgb),.05);animation:search-results-pop .22s cubic-bezier(.16,1,.3,1)}
+@keyframes search-results-pop{0%{opacity:0;transform:translateY(-6px)}100%{opacity:1;transform:translateY(0)}}
 #search-results::-webkit-scrollbar{width:3px}
 #search-results::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:2px}
 .search-empty{padding:16px;text-align:center;font-size:12px;color:rgba(255,255,255,.42);letter-spacing:.4px}
@@ -255,7 +270,7 @@ body.empty-home-active #empty-home{opacity:1;pointer-events:auto;transform:trans
 body.splash-active #empty-home,body.immersive-mode #empty-home{opacity:0!important;pointer-events:none!important}
 body.empty-home-active #canvas-container{filter:none}
 body.home-wallpaper-preview #canvas-container{filter:none}
-.empty-home-shell{height:100%;min-height:440px;display:grid;grid-template-columns:minmax(370px,.94fr) minmax(520px,1.06fr);grid-template-rows:auto 1fr;gap:14px;align-content:stretch}
+.empty-home-shell{height:100%;min-height:440px;display:grid;grid-template-columns:minmax(370px,.94fr) minmax(520px,1.06fr);grid-template-rows:auto minmax(0,1fr);gap:14px;align-content:stretch;overflow-y:auto;overscroll-behavior:contain}
 .home-hero{position:relative;grid-row:1 / span 2;min-height:438px;padding:28px;border-radius:28px;border:1px solid color-mix(in srgb,var(--home-accent) 22%,rgba(255,255,255,.085));background:linear-gradient(145deg,rgba(33,29,34,.64),rgba(9,10,14,.76) 48%,rgba(17,20,25,.70));box-shadow:0 28px 90px rgba(0,0,0,.34),0 0 0 1px color-mix(in srgb,var(--home-accent) 7%,transparent),inset 0 1px 0 rgba(255,255,255,.065);backdrop-filter:blur(30px) saturate(1.16);-webkit-backdrop-filter:blur(30px) saturate(1.16);overflow:hidden}
 .home-hero::before{content:'';position:absolute;inset:0;background:linear-gradient(118deg,rgba(255,255,255,.060),transparent 24%,rgba(255,83,103,.070) 54%,rgba(122,215,194,.055) 82%,transparent 100%),linear-gradient(90deg,rgba(255,255,255,.032) 0 1px,transparent 1px 48px),linear-gradient(0deg,rgba(255,255,255,.024) 0 1px,transparent 1px 44px);opacity:.72;pointer-events:none}
 .home-hero::after{content:'';position:absolute;left:28px;right:28px;bottom:22px;height:1px;background:linear-gradient(90deg,color-mix(in srgb,var(--home-accent) 0%,transparent),color-mix(in srgb,var(--home-accent) 52%,transparent),rgba(36,66,255,.24),rgba(248,244,238,.18),color-mix(in srgb,var(--home-accent) 0%,transparent));opacity:.82;pointer-events:none}
@@ -535,11 +550,11 @@ body.desktop-shell.empty-home-active.controls-visible #empty-home{bottom:126px}
 body.controls-visible #bottom-handle{opacity:0;pointer-events:none;transform:translateX(-50%) translateY(10px) scale(.78)}
 body.controls-visible #bottom-handle span{width:168px;opacity:0}
 body.immersive-mode #bottom-handle{opacity:0!important;pointer-events:none!important;transform:translateX(-50%) translateY(16px) scale(.92)!important}
-#bottom-bar{position:fixed;z-index:6;bottom:16px;left:50%;transform:translateX(-50%) translateY(36px) scale(.972);display:flex;flex-direction:column;align-items:center;gap:10px;opacity:0;pointer-events:none;filter:none;transition:opacity .34s cubic-bezier(.16,1,.3,1),bottom .34s cubic-bezier(.16,1,.3,1),width .34s,transform .46s cubic-bezier(.16,1,.3,1),filter .38s cubic-bezier(.16,1,.3,1);width:min(1080px,calc(100vw - 56px));padding:9px 22px 14px;border-radius:50px;background:transparent;border:0;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
+#bottom-bar{position:fixed;z-index:6;bottom:16px;left:50%;transform:translateX(-50%) translateY(36px) scale(.972);display:flex;flex-direction:column;align-items:center;gap:10px;opacity:0;pointer-events:none;filter:none;will-change:transform;transition:opacity .34s cubic-bezier(.16,1,.3,1),bottom .34s cubic-bezier(.16,1,.3,1),width .34s,transform .46s cubic-bezier(.16,1,.3,1);width:min(1080px,calc(100vw - 56px));padding:9px 22px 14px;border-radius:50px;background:transparent;border:0;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
 html.control-glass-svg-ok #bottom-bar{backdrop-filter:none;-webkit-backdrop-filter:none}
 #bottom-bar::before{content:none}
 #bottom-bar::after{content:none}
-#bottom-bar.visible{opacity:.91;pointer-events:auto;transform:translateX(-50%) translateY(0) scale(1);filter:blur(0);background:rgba(0,0,0,.10);backdrop-filter:blur(12px) saturate(1.8) brightness(1.16);-webkit-backdrop-filter:blur(12px) saturate(1.8) brightness(1.16);box-shadow:inset 0 0 2px 1px rgba(255,255,255,.35),inset 0 0 10px 4px rgba(255,255,255,.15),0 4px 16px rgba(17,17,26,.05),0 8px 24px rgba(17,17,26,.05),0 16px 56px rgba(17,17,26,.05),inset 0 4px 16px rgba(17,17,26,.05),inset 0 8px 24px rgba(17,17,26,.05),inset 0 16px 56px rgba(17,17,26,.05)}
+#bottom-bar.visible{opacity:.91;pointer-events:auto;transform:translateX(-50%) translateY(0) scale(1);background:rgba(0,0,0,.10);backdrop-filter:blur(12px) saturate(1.8) brightness(1.16);-webkit-backdrop-filter:blur(12px) saturate(1.8) brightness(1.16);box-shadow:inset 0 0 2px 1px rgba(255,255,255,.35),inset 0 0 10px 4px rgba(255,255,255,.15),0 4px 16px rgba(17,17,26,.05),0 8px 24px rgba(17,17,26,.05),0 16px 56px rgba(17,17,26,.05),inset 0 4px 16px rgba(17,17,26,.05),inset 0 8px 24px rgba(17,17,26,.05),inset 0 16px 56px rgba(17,17,26,.05)}
 html.control-glass-svg-ok #bottom-bar.visible{background:rgba(0,0,0,.10);backdrop-filter:url(#mineradio-control-glass-filter) saturate(1);-webkit-backdrop-filter:url(#mineradio-control-glass-filter) saturate(1)}
 #bottom-bar.soft-hidden{opacity:0;pointer-events:none;transform:translateX(-50%) translateY(88px) scale(.972);filter:none;background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
 body.home-controls-locked #bottom-bar{opacity:0!important;pointer-events:none!important;transform:translateX(-50%) translateY(92px) scale(.985)!important;filter:none!important;background:transparent!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;box-shadow:none!important}
@@ -742,6 +757,7 @@ body.immersive-mode #search-area,
 body.immersive-mode #top-right,
 body.immersive-mode #thumb-wrap,
 body.immersive-mode #fx-fab,
+body.immersive-mode #mac-wallpaper-btn,
 body.immersive-mode #fx-panel,
 body.immersive-mode #trial-banner,
 body.immersive-mode #ai-depth-chip,
@@ -1069,8 +1085,8 @@ body.desktop-shell.diy-mode #bottom-bar.stage-mode{left:50%;width:min(1080px,cal
   body.desktop-shell.diy-mode #fx-panel.show,
   body.desktop-shell.diy-mode #fx-panel.peek{right:18px}
 }
-@keyframes fx-panel-in{0%{opacity:0;transform:translateX(32px) translateY(18px) scale(.96);filter:blur(8px)}100%{opacity:1;transform:translateX(0) translateY(0) scale(1);filter:blur(0)}}
-@keyframes fx-panel-out{0%{opacity:1;transform:translateX(0) translateY(0) scale(1);filter:blur(0)}100%{opacity:0;transform:translateX(24px) translateY(12px) scale(.97);filter:blur(6px)}}
+@keyframes fx-panel-in{0%{opacity:0;transform:translateX(32px) translateY(18px) scale(.96)}100%{opacity:1;transform:translateX(0) translateY(0) scale(1)}}
+@keyframes fx-panel-out{0%{opacity:1;transform:translateX(0) translateY(0) scale(1)}100%{opacity:0;transform:translateX(24px) translateY(12px) scale(.97)}}
 .fx-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:13px;border-bottom:1px solid rgba(255,255,255,.065)}
 .fx-head-main{min-width:0}
 .fx-head-actions{display:flex;align-items:center;gap:7px;margin-left:12px;flex:0 0 auto}
@@ -1875,9 +1891,6 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
       </svg>
     </button>
     <button id="diy-mode-btn" class="desktop-mode-btn" type="button" onclick="toggleDiyMode()" title="开启 DIY 玩家模式" aria-label="开启 DIY 玩家模式" aria-pressed="false">DIY</button>
-    <button id="mac-wallpaper-btn" class="icon-btn" type="button" onclick="toggleMacWallpaperFromUi()" title="桌面壁纸模式（⌥⌘W）" aria-label="桌面壁纸模式">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 14l5-4 4 3 3-2 6 5"/><path d="M9 21h6"/></svg>
-    </button>
     <button class="desktop-window-btn" data-window-action="minimize" title="最小化" aria-label="最小化">
       <svg viewBox="0 0 16 16"><path d="M3 8h10"/></svg>
     </button>
@@ -2019,6 +2032,10 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
   <svg width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.9" viewBox="0 0 24 24"><path d="M4 7h8"/><path d="M16 7h4"/><circle cx="14" cy="7" r="2"/><path d="M4 17h4"/><path d="M12 17h8"/><circle cx="10" cy="17" r="2"/></svg>
 </button>
 <button id="fx-fab-hide-btn" type="button" onclick="toggleFxFabAutoHide(event)" title="自动隐藏视觉控制台">‹</button>
+<!-- macOS 壁纸模式入口: 右下角浮动, 与 #fx-fab 同级(window-shell 内), 故被弹窗/面板正确遮挡 -->
+<button id="mac-wallpaper-btn" class="icon-btn" type="button" onclick="toggleMacWallpaperFromUi()" title="壁纸模式（⌥⌘W）" aria-label="壁纸模式">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 14l5-4 4 3 3-2 6 5"/><path d="M9 21h6"/></svg>
+</button>
 
 <!-- 控制台 (右侧贴边自动显示, 无关闭按钮) -->
 <div id="fx-panel">
@@ -3405,6 +3422,8 @@ var controlsHideTimer = null;
 var controlsHandleDimTimer = null;
 var controlsLastMoveAt = 0;
 var controlsShelfSuppressUntil = 0;
+var CONTROLS_EDGE_REVEAL_PX = 120; // 鼠标移入屏幕底部该高度区域时, 自动弹出已隐藏的控制条 (官方式底部贴边唤出)
+var CONTROLS_EDGE_KEEP_PX = 200;   // 已弹出后, 指针处于底部该更大区域内即保持显示 (迟滞带, 防边界来回抖动)
 var cursorHideTimer = null;
 var CURSOR_HIDE_DELAY = 2500;
 var fxPanelPinned = false;
@@ -3776,8 +3795,15 @@ function getRenderPixelRatio() {
   if (isDeepBackgroundMode()) return Math.min(device, 0.30);
   var cssPixels = Math.max(1, innerWidth * innerHeight);
   var quality = renderQualityProfile();
-  var budgetCap = Math.sqrt(quality.budget / cssPixels);
-  var cap = Math.min(quality.cap, budgetCap);
+  var budget = quality.budget, capLimit = quality.cap;
+  // 真壁纸全铺(沉桌面图标层, 非全屏 Space, 须与桌面图片+图标层逐帧重合成)比窗口态多渲约 1.8x 像素。
+  // 壁纸态降一点像素预算换 GPU headroom 保持稳帧 → 主观更丝滑(普通窗口无此 class, 返回值与改前完全一致)。
+  if (document.body.classList.contains('mac-wallpaper-on')) {
+    budget = Math.min(budget, 4000000);
+    capLimit = Math.min(capLimit, 1.15);
+  }
+  var budgetCap = Math.sqrt(budget / cssPixels);
+  var cap = Math.min(capLimit, budgetCap);
   return Math.max(quality.min, Math.min(device, cap));
 }
 function getRenderPixelLoad() {
@@ -5392,8 +5418,11 @@ function updateControlsAutoHideFromPointer(x, y) {
   if (document.body.classList.contains('home-controls-locked')) return;
   if (isBottomControlsSuppressedForShelf()) return;
   var bar = document.getElementById('bottom-bar');
-  if (!bar || !bar.classList.contains('visible')) return;
-  if (!controlsAutoHide) { setControlsHidden(false); return; }
+  if (!bar) return;
+  if (!controlsAutoHide) { if (bar.classList.contains('visible')) setControlsHidden(false); return; }
+
+  // diy 模式: fx 控制台贴边显示时让位, 不与底部控制条抢同一角落
+  var overFxChrome = false;
   if (diyPlayerMode) {
     var fxPanel = document.getElementById('fx-panel');
     var fxFab = document.getElementById('fx-fab');
@@ -5401,11 +5430,23 @@ function updateControlsAutoHideFromPointer(x, y) {
     var br = fxFab ? fxFab.getBoundingClientRect() : null;
     var overFxPanel = fxPanel && (fxPanel.classList.contains('peek') || fxPanel.classList.contains('show')) && fr && x >= fr.left - 18 && x <= fr.right + 18 && y >= fr.top - 18 && y <= fr.bottom + 18;
     var overFxFab = br && x >= br.left - 18 && x <= br.right + 18 && y >= br.top - 18 && y <= br.bottom + 18;
-    if (overFxPanel || overFxFab) {
-      scheduleControlsHide(80);
-      return;
-    }
+    overFxChrome = !!(overFxPanel || overFxFab);
   }
+
+  var nearBottomReveal = y >= innerHeight - CONTROLS_EDGE_REVEAL_PX; // 唤出触发带 (窄)
+  var nearBottomKeep = y >= innerHeight - CONTROLS_EDGE_KEEP_PX;     // 保持显示带 (宽, 迟滞)
+  // 舞台歌单架模式: 屏幕底部就是舞台卡片区, 不让贴边唤出抢占(否则控制条盖住底排卡片偷点击); 仍可经把手/悬停控制条唤出
+  if (typeof fx !== 'undefined' && fx && fx.shelf === 'stage') { nearBottomReveal = false; nearBottomKeep = false; }
+
+  // 控制条隐藏中 (未挂 visible 或处于 soft-hidden): 鼠标贴近屏幕底部即自动弹出 (官方式)
+  if (!bar.classList.contains('visible') || bar.classList.contains('soft-hidden')) {
+    if (overFxChrome) return;
+    if (nearBottomReveal && hasActivePlaybackControls()) revealBottomControls(640);
+    return;
+  }
+
+  // 控制条显示中: 维持 / 收起
+  if (overFxChrome) { scheduleControlsHide(80); return; }
   controlsLastMoveAt = performance.now();
   var rect = bar.getBoundingClientRect();
   var handle = document.getElementById('bottom-handle');
@@ -5416,8 +5457,8 @@ function updateControlsAutoHideFromPointer(x, y) {
   var miniRect = mini ? mini.getBoundingClientRect() : null;
   var overMini = miniQueueOpen && miniRect && x >= miniRect.left - 16 && x <= miniRect.right + 16 && y >= miniRect.top - 16 && y <= miniRect.bottom + 16;
   if (overHandle) wakeBottomHandle();
-  if (overBar || overMini || overHandle) revealBottomControls(overHandle ? 900 : 520);
-  else scheduleControlsHide(70);
+  if (overBar || overMini || overHandle || nearBottomKeep) revealBottomControls(overHandle ? 900 : 520);
+  else scheduleControlsHide(300);
 }
 
 function toggleControlsAutoHide() {
@@ -5457,7 +5498,7 @@ function applyControlsAutoHidePreference() {
   }
   function leaveControls(){
     controlsHovering = false;
-    scheduleControlsHide(70);
+    scheduleControlsHide(300);
     wakeBottomHandle(900);
   }
   bar.addEventListener('mouseenter', enterControls);
@@ -5599,6 +5640,7 @@ function updateParticlePointerFrame() {
 function beginParticlePointerDrag(e) {
   if (e.button === 2) return;
   if (isPointerOverUi(e)) return;
+  wallpaperRecenter = false; // 新一次拖动取消进行中的壁纸归正
   markRenderInteraction('canvas-drag', 1200);
   idleGuidePointerDown(e);
   orbit.rotating = true; orbit.last.x = e.clientX; orbit.last.y = e.clientY;
@@ -5641,7 +5683,11 @@ window.addEventListener('mousemove', function(e){
     markRenderInteraction('canvas-drag', 900);
     unlockCenteredView();
     var dx = e.clientX - orbit.last.x, dy = e.clientY - orbit.last.y;
-    if (particlePointerSpin.active) {
+    // drag 距离判断先行: 只有越过 CLICK_THRESHOLD(6px) 才算 drag → 才旋转。
+    // 点击(<6px)零旋转污染, 修「点一下却把视角转歪」(壁纸 + 普通窗口通用)。
+    var totalDx = e.clientX - mouseDownAt.x, totalDy = e.clientY - mouseDownAt.y;
+    if (Math.sqrt(totalDx*totalDx + totalDy*totalDy) > CLICK_THRESHOLD) mouseDownAt.hadDrag = true;
+    if (particlePointerSpin.active && mouseDownAt.hadDrag) {
       var nowSpin = performance.now();
       var spinDt = Math.max(1 / 120, Math.min(0.08, (nowSpin - particlePointerSpin.lastT) / 1000 || 1 / 60));
       applyParticleSpinDrag(dx, dy, spinDt);
@@ -5650,9 +5696,6 @@ window.addEventListener('mousemove', function(e){
       particlePointerSpin.lastT = nowSpin;
     }
     orbit.last.x = e.clientX; orbit.last.y = e.clientY;
-    // drag 距离判断
-    var totalDx = e.clientX - mouseDownAt.x, totalDy = e.clientY - mouseDownAt.y;
-    if (Math.sqrt(totalDx*totalDx + totalDy*totalDy) > CLICK_THRESHOLD) mouseDownAt.hadDrag = true;
     if (orbit.recentering) orbit.recentering = false;
   }
   queueParticlePointerFrame(e.clientX, e.clientY);
@@ -5660,6 +5703,11 @@ window.addEventListener('mousemove', function(e){
 window.addEventListener('mouseup', function(){
   orbit.rotating = false;
   particlePointerSpin.active = false;
+  if (document.body.classList.contains('mac-wallpaper-on')) {
+    // 壁纸是背景非摆姿玩具: 松手灭甩飞 + 温和归正, 不再卡在歪角(修「拖动带来的角度变换」)。
+    particleSpin.vx = 0; particleSpin.vy = 0;
+    wallpaperRecenter = true;
+  }
   idleGuidePointerUp();
 });
 renderer.domElement.addEventListener('mouseleave', function(){
@@ -14826,12 +14874,15 @@ function requestPlaylistCover(url, cb) {
 //   - 点击两侧卡: 滚到那张
 //   - ESC: 关闭内容框
 // ============================================================
+var _pointerRay = new THREE.Raycaster();
+var _pointerNdc = new THREE.Vector2();
 function raycasterFromPointerEvent(e) {
   var mx = (e.clientX / innerWidth) * 2 - 1;
   var my = -(e.clientY / innerHeight) * 2 + 1;
-  var rc = new THREE.Raycaster();
-  rc.setFromCamera(new THREE.Vector2(mx, my), camera);
-  return rc;
+  // 复用单例, 避免每次指针移动都 new 一个 Raycaster/Vector2 (GC 抖动). 调用方均同步即时消费结果, 不跨帧保留.
+  _pointerNdc.set(mx, my);
+  _pointerRay.setFromCamera(_pointerNdc, camera);
+  return _pointerRay;
 }
 function pointerCardHit(rc, e, screenPad) {
   if (!shelfManager) return null;
@@ -18942,6 +18993,7 @@ function initControlGlassSurface() {
   var searchResults = document.getElementById('search-results');
   if (window.ResizeObserver && (bar || searchBox || searchTabs || searchResults)) {
     var ro = new ResizeObserver(function(){
+      if (performance.now() < windowResizeActiveUntil) return; // 窗口缩放中由缩放协调器限频更新, 不逐帧重生成玻璃位移图
       requestAnimationFrame(updateControlGlassDisplacementMap);
       requestAnimationFrame(updateSearchBoxGlassDisplacementMap);
       requestAnimationFrame(updateSearchPillGlassDisplacementMap);
@@ -18958,11 +19010,7 @@ function initControlGlassSurface() {
     if (searchTabs) mo.observe(searchTabs, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
     if (searchResults) mo.observe(searchResults, { childList: true, subtree: true });
   }
-  window.addEventListener('resize', function(){
-    requestAnimationFrame(updateControlGlassDisplacementMap);
-    requestAnimationFrame(updateSearchBoxGlassDisplacementMap);
-    requestAnimationFrame(updateSearchPillGlassDisplacementMap);
-  });
+  // 窗口缩放时的玻璃位移图刷新已并入下方「缩放协调器」(限频 + 停止后补一帧), 此处不再逐帧重生成.
 }
 
 function bindPlayerControlAnimations() {
@@ -19915,7 +19963,7 @@ async function loadPlaylistIntoQueueById(id, autoplay, title) {
 }
 
 // 进度条
-var progressDragState = { active: false, lastParticleAt: 0 };
+var progressDragState = { active: false, lastParticleAt: 0, seekAt: 0, pendingSec: null };
 function normalizePlaybackDurationSeconds(value) {
   var raw = Number(value);
   if (!isFinite(raw) || raw <= 0) return 0;
@@ -19940,6 +19988,7 @@ function setProgressVisual(percent) {
   if (thumb) thumb.style.left = percent + '%';
 }
 function updatePlaybackProgressUi() {
+  if (progressDragState.active) return; // 拖动中由 scrubProgressPointer 驱动可视, 避免 timeupdate 把进度拽回旧位置造成抖动
   var durationSec = getPlaybackDurationSeconds();
   var currentSec = getPlaybackCurrentSeconds();
   if (durationSec > 0 && currentSec > durationSec) currentSec = durationSec;
@@ -19985,6 +20034,25 @@ function seekFromProgressPointer(e, emitParticles) {
   syncBeatMapPlaybackCursor(audio.currentTime);
   if (emitParticles) emitProgressDragParticles(e.clientX, rect.top + rect.height / 2);
 }
+function scrubProgressPointer(e) {
+  var durationSec = getPlaybackDurationSeconds();
+  if (!audio || !durationSec) return;
+  var bar = document.getElementById('progress-bar');
+  var rect = bar.getBoundingClientRect();
+  var ratio = clampRange((e.clientX - rect.left) / rect.width, 0, 1);
+  var targetSec = ratio * durationSec;
+  progressDragState.pendingSec = targetSec;
+  setProgressVisual(ratio * 100);                       // 视觉每帧跟手, 顺滑
+  var td = document.getElementById('time-display');
+  if (td) td.textContent = formatProgramTime(targetSec) + ' / ' + formatProgramTime(durationSec);
+  emitProgressDragParticles(e.clientX, rect.top + rect.height / 2);
+  var now = performance.now();
+  if (now - progressDragState.seekAt >= 100) {          // 真正 seek 限频 ~10Hz, 减少流媒体重缓冲与拖动卡顿
+    progressDragState.seekAt = now;
+    audio.currentTime = targetSec;
+    syncBeatMapPlaybackCursor(audio.currentTime);
+  }
+}
 var progressBar = document.getElementById('progress-bar');
 progressBar.addEventListener('pointerdown', function(e){
   if (!audio || !audio.duration) return;
@@ -19995,17 +20063,23 @@ progressBar.addEventListener('pointerdown', function(e){
 });
 progressBar.addEventListener('pointermove', function(e){
   if (!progressDragState.active) return;
-  seekFromProgressPointer(e, true);
+  scrubProgressPointer(e);
 });
 function endProgressDrag(e) {
   if (!progressDragState.active) return;
   progressDragState.active = false;
   progressBar.classList.remove('is-dragging');
   try { progressBar.releasePointerCapture(e.pointerId); } catch (err) {}
+  if (audio && progressDragState.pendingSec != null) { // 释放时提交精确落点, 补上限频可能漏掉的最后一次 seek
+    audio.currentTime = progressDragState.pendingSec;
+    syncBeatMapPlaybackCursor(audio.currentTime);
+  }
+  progressDragState.pendingSec = null; // 无条件清, 杜绝跨次拖动残留旧落点
+  updatePlaybackProgressUi(); // active 已置 false, 立刻按最终位置刷新进度与时间
 }
 progressBar.addEventListener('pointerup', endProgressDrag);
 progressBar.addEventListener('pointercancel', endProgressDrag);
-progressBar.addEventListener('lostpointercapture', function(){ progressDragState.active = false; progressBar.classList.remove('is-dragging'); });
+progressBar.addEventListener('lostpointercapture', endProgressDrag);
 setInterval(function(){
   if (!audio) { updatePlaybackProgressUi(); return; }
   updateListenStatsTick(false);
@@ -24798,6 +24872,8 @@ var pinchState = { active:false, lastX:0, lastY:0, lastT:0 };
 var particleSpin = { vx: 0, vy: 0, damping: 0.90 };
 // 手势驱动的总旋转 (累计角度), 输出到 particles
 var gestureRotation = { x: 0, y: 0 };
+// 壁纸态: 松手后把视角温和归正 (壁纸是背景非摆姿玩具)。仅 mac-wallpaper-on 时置位; 普通窗口保持 held-pose。
+var wallpaperRecenter = false;
 var gestureGrip = { value: 0, target: 0, openness: 1, lastState: 'open', pulse: 0 };
 var PARTICLE_POINTER_SPIN_X = 0.0032;
 var PARTICLE_POINTER_SPIN_Y = 0.0034;
@@ -25142,6 +25218,15 @@ function drawHandSkeleton(lm, isPinch, openness, isFist) {
 
 // 每帧调用 — 应用惯性旋转 + handActive 衰减
 function tickGestureRotation(dt) {
+  if (wallpaperRecenter) {
+    // 壁纸态松手归正: 温和把累计角度衰减回 0(普通窗口 wallpaperRecenter 恒 false, held-pose 不变)。
+    var rk = Math.min(1, dt * 4.0);
+    gestureRotation.x += (0 - gestureRotation.x) * rk;
+    gestureRotation.y += (0 - gestureRotation.y) * rk;
+    if (Math.abs(gestureRotation.x) < 0.001 && Math.abs(gestureRotation.y) < 0.001) {
+      gestureRotation.x = 0; gestureRotation.y = 0; wallpaperRecenter = false;
+    }
+  }
   if (Math.abs(particleSpin.vx) > 0.0001 || Math.abs(particleSpin.vy) > 0.0001) {
     var rx = particleSpin.vx * dt;
     var ry = particleSpin.vy * dt;
@@ -25191,13 +25276,55 @@ function refreshMainRendererViewport(reason) {
   }
 }
 function scheduleMainRendererViewportRefresh(reason) {
-  refreshMainRendererViewport(reason || 'sync');
-  [48, 140, 320].forEach(function(delay){
-    setTimeout(function(){ refreshMainRendererViewport(reason || 'sync'); }, delay);
-  });
+  // 放大 / 全屏切换是短促的一次性动画。途中只更新相机宽高比(便宜, 比例恒正确, 画布靠 CSS 100% 连续
+  // 平滑拉伸), setSize(GPU 帧缓冲重分配, 每次都是一次 hitch)只在动画收尾做一次——避免动画途中多次重
+  // 分配造成 stutter。与 window-drag 的丝滑做法一致(拖拽中绝不 setSize, 停手补一帧精确分辨率)。
+  applyViewportCameraOnly();
+  [48, 140].forEach(function(delay){ setTimeout(applyViewportCameraOnly, delay); });
+  setTimeout(function(){ refreshMainRendererViewport(reason || 'sync'); }, 320); // 收尾补 setSize, 一次到清晰
+}
+// 窗口缩放协调器: 拖拽改窗会涌入大量 resize 事件. 廉价的相机宽高比每帧合并更新一次(画面比例始终正确,
+// 仅分辨率短暂略软); 昂贵的 renderer.setSize(GPU 帧缓冲重分配) + 玻璃位移图重生成限频 ~110ms,
+// 并在拖拽停止后补一帧精确刷新. 画布 CSS width/height:100% 会即时拉伸, 故 setSize 滞后一两帧不可见.
+var windowResizeActiveUntil = 0;
+var _viewportResizeRafQueued = false;
+var _viewportSettleTimer = null;
+function applyViewportCameraOnly() {
+  if (typeof camera !== 'undefined' && camera) {
+    camera.aspect = Math.max(1, innerWidth) / Math.max(1, innerHeight);
+    camera.updateProjectionMatrix();
+  }
+}
+function applyViewportHeavy(reason) {
+  applyRendererPowerMode(); // 内部按尺寸/像素比 guard, 真变化才 setSize
+  updateControlGlassDisplacementMap();
+  updateSearchBoxGlassDisplacementMap();
+  updateSearchPillGlassDisplacementMap();
+  if (typeof requestStageLyricCameraSnap === 'function' && (desktopRuntimeState.fullscreen || document.fullscreenElement)) {
+    requestStageLyricCameraSnap(reason === 'resize' ? 4 : 10);
+  }
+}
+function onViewportResizeThrottled(reason) {
+  // 拖拽全程只每帧合并更新相机宽高比(比例恒正确), 画布靠 CSS width/height:100% 连续平滑拉伸;
+  // 拖拽中绝不 setSize —— 逐帧重分配会卡, 限频重分配会让分辨率一跳一跳"发硬". 故 debounce 到停手.
+  if (!_viewportResizeRafQueued) {
+    _viewportResizeRafQueued = true;
+    requestAnimationFrame(function(){
+      _viewportResizeRafQueued = false;
+      applyViewportCameraOnly();
+    });
+  }
+  // 停手后(debounce 150ms)补一帧精确分辨率 + 玻璃图: 拖拽平滑、松手即清晰.
+  if (_viewportSettleTimer) clearTimeout(_viewportSettleTimer);
+  _viewportSettleTimer = setTimeout(function(){
+    _viewportSettleTimer = null;
+    applyViewportCameraOnly();
+    applyViewportHeavy('settle');
+  }, 150);
 }
 window.addEventListener('resize', function(){
-  scheduleMainRendererViewportRefresh('resize');
+  windowResizeActiveUntil = performance.now() + 140; // 抑制 ResizeObserver 逐帧重生成玻璃图(略短于 150ms settle, 让 settle 收尾且观察器在尾段恢复, 不漏独立 reflow)
+  onViewportResizeThrottled('resize');
   if (desktopRuntimeState.fullscreen || desktopFullscreenActive || document.fullscreenElement || document.body.classList.contains('desktop-fullscreen')) layoutFullscreenDiyZone();
 });
 document.addEventListener('keydown', function(e){
@@ -25214,6 +25341,13 @@ document.addEventListener('keydown', function(e){
   else if (e.code === 'ArrowRight') nextTrack();
   else if (e.code === 'ArrowLeft')  prevTrack();
   else if (e.code === 'Escape')     {
+    // 壁纸模式: 当主窗口拿到焦点(browsing/interact 时)按 Esc 退出壁纸。纯 ambient 沉窗时窗口非 key 收不到 Esc;
+    // browsing 态由 main 的 before-input-event 先消化(沉回 ambient), 故这里不会与之双触发。
+    if (document.body.classList.contains('mac-wallpaper-on') && window.desktopWindow && window.desktopWindow.macWallpaperToggle) {
+      e.preventDefault();
+      window.desktopWindow.macWallpaperToggle();
+      return;
+    }
     if (immersiveMode) {
       e.preventDefault();
       setImmersiveMode(false);
@@ -26931,17 +27065,46 @@ animate();
     if (window.desktopWindow && window.desktopWindow.macWallpaperToggle) window.desktopWindow.macWallpaperToggle();
   };
   if (!api || typeof api.macWallpaperState !== 'function') return;
+  var wasInteracting = false;
   function reflect(state){
     var on = !!(state && state.active);
+    var interacting = !!(state && state.interacting);
     document.body.classList.toggle('mac-wallpaper-on', on);
+    document.body.classList.toggle('mac-wallpaper-interacting', on && interacting);
     if (on && typeof pushMacHudState === 'function') pushMacHudState(true);
     var btn = document.getElementById('mac-wallpaper-btn');
-    if (btn) btn.title = on ? '退出壁纸模式（⌥⌘W）· 前置交互 ⌥⌘B' : '桌面壁纸模式（⌥⌘W）';
+    if (btn) btn.title = on ? '退出壁纸模式（⌥⌘W）' : '壁纸模式（⌥⌘W）';
+    // First time the wallpaper actually becomes directly clickable, tell the user once.
+    if (interacting && !wasInteracting) {
+      try {
+        if (!localStorage.getItem('mr-wallpaper-interact-hinted') && typeof showToast === 'function') {
+          showToast('壁纸已可直接操作：点歌 / 拖动看一下(松手自动回正) / 滚轮缩放。鼠标移到屏幕左缘出歌单、移到底部出控制条——完整功能都在壁纸里。搜索打字 / 登录请用菜单栏图标的「前置浏览」把窗口临时置顶（系统不给壁纸转发键盘）。控制条上的 👁 可关闭直接互动');
+          localStorage.setItem('mr-wallpaper-interact-hinted', '1');
+        }
+      } catch (e) {}
+    }
+    wasInteracting = interacting;
   }
   api.macWallpaperState().then(function(s){
     if (s && s.available) { document.body.classList.add('mac-wallpaper-available'); reflect(s); }
   }).catch(function(){});
   if (typeof api.onWallpaperModeChange === 'function') api.onWallpaperModeChange(reflect);
+
+  // While interacting in place, ping main on real activity so its idle auto-restore timer
+  // never fires mid-session. Throttled to ~1/sec; only attaches when the bridge exists.
+  if (typeof api.macInteractPing === 'function') {
+    var lastPing = 0;
+    function ping(){
+      if (!document.body.classList.contains('mac-wallpaper-interacting')) return;
+      var now = Date.now();
+      if (now - lastPing < 1000) return;
+      lastPing = now;
+      try { api.macInteractPing(); } catch (e) {}
+    }
+    ['mousedown','wheel','mousemove','contextmenu'].forEach(function(ev){
+      window.addEventListener(ev, ping, { passive: true, capture: true });
+    });
+  }
 })();
 </script>
 </body>

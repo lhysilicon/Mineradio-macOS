@@ -4,7 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const { execFile, spawn } = require('child_process');
 const macWindowLevel = require('./mac-window-level');
-const { macWallpaperPowerTransition } = require('./wallpaper-power');
+const macDesktopIcons = require('./mac-desktop-icons');
+const macEventTap = require('./mac-event-tap');
 
 let mainWindow = null;
 let localServer = null;
@@ -24,6 +25,11 @@ let wallpaperState = {};
 // macOS desktop-wallpaper mode (sink the LIVE main window to desktop level).
 let macWallpaperActive = false;
 let macBrowsingActive = false;
+// Interactive-by-default wallpaper: a listen-only mouse tap forwards clicks on the BARE desktop
+// into the visualizer, so the user clicks the wallpaper in place WITHOUT hiding icons and without
+// the window ever coming forward. macInteractActive = forwarding on (default ON in wallpaper mode;
+// ⌥⌘B / HUD globe toggle it). Mutually independent of browsing (lift-to-front).
+let macInteractActive = false;
 let macWallpaperSaved = null;
 let macTray = null;
 // Always-available mini control pill (transport + mode toggle) that floats over the
@@ -38,8 +44,7 @@ let macWallpaperHudLoaded = false;    // HUD page finished loading (did-finish-l
 // deep-background power path). Occlusion-by-fullscreen-app was MEASURED unreliable for an
 // all-spaces/desktop-level window (occlusionState stays "visible"), so we only act on the
 // signals that are reliable. lastWallpaperPowerState is exposed for the self-test.
-// (The idle flag itself is delivered to the renderer via IPC, not held in a
-//  module variable; the self-test reads lastWallpaperPowerState.)
+let macWallpaperPowerIdle = false;
 let lastWallpaperPowerState = null;
 // Last now-playing pushed by the renderer; cached so a freshly-created HUD shows the
 // current track immediately instead of waiting for the next renderer push.
@@ -718,10 +723,17 @@ function exitFullscreenToWindow(win) {
 
 function toggleFullscreen(win) {
   if (!win || win.isDestroyed()) return;
+  // 双模式分开: 若主窗正处真壁纸态(沉桌面 / setSimpleFullScreen), 先干净退出再进原生全屏 ——
+  // 避免 setSimpleFullScreen 与 setFullScreen 两条全屏路径打架, 也让「壁纸」与「全屏」是明确切换。
+  if (process.platform === 'darwin' && win === mainWindow && macWallpaperActive) {
+    try { exitMacWallpaperMode(); } catch (e) {}
+  }
   if (win.isFullScreen() || windowFullscreenActive) {
     exitFullscreenToWindow(win);
     return;
   }
+  // 防御: 本窗口若未显式标记可全屏, setFullScreen 可能静默 no-op → 显式确保进真 fullscreen Space。
+  try { if (process.platform === 'darwin' && !win.isFullScreenable()) win.setFullScreenable(true); } catch (e) {}
   windowFullscreenActive = true;
   win.setFullScreen(true);
   sendWindowState(win);
@@ -1123,10 +1135,13 @@ function closeWallpaperWindow() {
 // ---------------------------------------------------------------------------
 // macOS desktop-wallpaper mode.
 // behind-icons + interactive are mutually exclusive on macOS (Finder owns desktop
-// hit-testing), so this is a Plash-style toggle implemented on the LIVE main window
-// via mac-window-level FFI (no destroy/recreate -> renderer/audio/login state kept):
-//   App mode  <--(Alt+Cmd+W)-->  Wallpaper(ambient, behind icons, click-through)
-//                                      <--(Alt+Cmd+B)-->  Browsing(raised, interactive)
+// hit-testing) UNLESS a system event tap forwards the desktop clicks back in. Implemented
+// on the LIVE main window via mac-window-level FFI (no destroy/recreate -> renderer/audio/
+// login state kept):
+//   App mode  <--(⌥⌘W)-->  Wallpaper(ambient, behind icons; bare-desktop clicks are forwarded
+//                            into the renderer by the listen-only mouse tap = "直接点壁纸",
+//                            default-on, toggled with ⌥⌘B). "前置浏览" raises the window to a
+//                            normal interactive level (pausing the tap) for full operation.
 // All FFI is fail-soft: if the bridge is unavailable we stay in app mode + notify.
 // The Windows WorkerW path (attachWallpaperToWorkerW / wallpaperWindow) is untouched.
 // ---------------------------------------------------------------------------
@@ -1137,6 +1152,101 @@ function notifyMac(msg) {
     execFile('/usr/bin/osascript', ['-e',
       `display notification "${String(msg).replace(/["\\]/g, '\\$&')}" with title "Mineradio 壁纸"`]);
   } catch (e) { /* notifications are best-effort */ }
+}
+
+// --- Dock auto-hide while in wallpaper mode (show on mouse-approach) ---------------------------
+// Remembers the user's prior Dock `autohide` and restores it on exit. `defaults` + `killall Dock`
+// (no extra TCC permission). darwin-only, fully fail-soft. If the user already auto-hides the Dock
+// we leave it (and skip the restart).
+let macDockPriorAutohide = null; // '0' | '1' | 'absent' — the user's setting before we touched it
+let macDockPriorAutohideDelay = null; // user's autohide-delay (raw string | 'absent') before we zeroed it
+let macDockMarkerPath = null;    // userData/.wallpaper-dock-autohidden — written while WE auto-hid the Dock
+// Headless self-test / probes must not restart the real Dock or pop the Input-Monitoring prompt.
+function macWallpaperTestMode() { return process.env.MINERADIO_WALLPAPER_SELFTEST === '1'; }
+// Crash-safety marker (mirrors mac-desktop-icons): records the user's prior autohide so a hard crash
+// while the Dock is auto-hidden can be recovered on the next launch (the in-memory prior is gone then).
+function configureMacDockRecovery(userDataDir) {
+  if (process.platform !== 'darwin') return;
+  try { macDockMarkerPath = path.join(userDataDir, '.wallpaper-dock-autohidden'); } catch (e) { macDockMarkerPath = null; }
+}
+function writeMacDockMarker(prior) {
+  if (!macDockMarkerPath) return;
+  try { require('fs').writeFileSync(macDockMarkerPath, String(prior)); } catch (e) {}
+}
+function clearMacDockMarker() {
+  if (!macDockMarkerPath) return;
+  try { const fs = require('fs'); if (fs.existsSync(macDockMarkerPath)) fs.unlinkSync(macDockMarkerPath); } catch (e) {}
+}
+function macSetDockAutohide(on) {
+  if (process.platform !== 'darwin' || macWallpaperTestMode()) return;
+  try {
+    if (macDockPriorAutohide === null) {
+      let prior = 'absent';
+      try { prior = require('child_process').execFileSync('/usr/bin/defaults', ['read', 'com.apple.dock', 'autohide'], { timeout: 4000 }).toString().trim(); } catch (e) { prior = 'absent'; }
+      macDockPriorAutohide = (prior === '0' || prior === '1') ? prior : 'absent';
+    }
+    if (on && macDockPriorAutohide === '1') return; // already auto-hidden → nothing to change
+    if (on) {
+      writeMacDockMarker(macDockPriorAutohide); // marker BEFORE the write so a crash still recovers (prior is 'absent'|'0' here)
+      // Also zero the reveal delay so the Dock pops up instantly at the bottom edge — the macOS
+      // default (~0.5s) feels too slow when the wallpaper covers the screen (user feedback).
+      if (macDockPriorAutohideDelay === null) {
+        let pd = 'absent';
+        try { pd = require('child_process').execFileSync('/usr/bin/defaults', ['read', 'com.apple.dock', 'autohide-delay'], { timeout: 4000 }).toString().trim(); } catch (e) { pd = 'absent'; }
+        macDockPriorAutohideDelay = pd;
+      }
+    }
+    const killall = () => execFile('/usr/bin/killall', ['Dock'], () => {});
+    execFile('/usr/bin/defaults', ['write', 'com.apple.dock', 'autohide', '-bool', on ? 'true' : 'false'], () => {
+      if (on) execFile('/usr/bin/defaults', ['write', 'com.apple.dock', 'autohide-delay', '-float', '0'], killall);
+      else killall();
+    });
+  } catch (e) {}
+}
+function restoreMacDock() {
+  if (process.platform !== 'darwin' || macDockPriorAutohide === null) return;
+  const prior = macDockPriorAutohide; macDockPriorAutohide = null;
+  const priorDelay = macDockPriorAutohideDelay; macDockPriorAutohideDelay = null;
+  if (prior === '1') return; // we never changed it (user already auto-hides) → no marker, no delay change
+  try {
+    const after = () => execFile('/usr/bin/killall', ['Dock'], () => { clearMacDockMarker(); }); // clear only AFTER restore
+    const restoreAutohide = () => {
+      if (prior === 'absent') execFile('/usr/bin/defaults', ['delete', 'com.apple.dock', 'autohide'], after);
+      else execFile('/usr/bin/defaults', ['write', 'com.apple.dock', 'autohide', '-bool', 'false'], after);
+    };
+    // restore the reveal delay we zeroed (delete → back to macOS default), then the autohide flag
+    if (priorDelay === null || priorDelay === 'absent') execFile('/usr/bin/defaults', ['delete', 'com.apple.dock', 'autohide-delay'], restoreAutohide);
+    else execFile('/usr/bin/defaults', ['write', 'com.apple.dock', 'autohide-delay', '-float', priorDelay], restoreAutohide);
+  } catch (e) {}
+}
+function restoreMacDockSync() {
+  if (process.platform !== 'darwin' || macDockPriorAutohide === null) return;
+  const prior = macDockPriorAutohide; macDockPriorAutohide = null;
+  const priorDelay = macDockPriorAutohideDelay; macDockPriorAutohideDelay = null;
+  if (prior === '1') return;
+  const cp = require('child_process');
+  const run = (args) => { try { cp.execFileSync('/usr/bin/defaults', args, { timeout: 4000 }); } catch (e) {} };
+  try {
+    if (prior === 'absent') run(['delete', 'com.apple.dock', 'autohide']);
+    else run(['write', 'com.apple.dock', 'autohide', '-bool', 'false']);
+    if (priorDelay === null || priorDelay === 'absent') run(['delete', 'com.apple.dock', 'autohide-delay']);
+    else run(['write', 'com.apple.dock', 'autohide-delay', '-float', priorDelay]);
+    cp.execFileSync('/usr/bin/killall', ['Dock'], { timeout: 4000 });
+    clearMacDockMarker();
+  } catch (e) {}
+}
+// On startup: if a marker survived, a previous session auto-hid the Dock and died before restoring.
+// Restore the user's prior autohide so they never open to a permanently auto-hidden Dock. Runs BEFORE
+// any enter, so a later macSetDockAutohide won't misread the still-hidden state as "the user's".
+function macDockRecoverIfStranded() {
+  if (process.platform !== 'darwin' || !macDockMarkerPath || macWallpaperTestMode()) return;
+  try {
+    const fs = require('fs');
+    if (!fs.existsSync(macDockMarkerPath)) return;
+    const prior = (fs.readFileSync(macDockMarkerPath, 'utf8').trim() || 'absent');
+    macDockPriorAutohide = (prior === '0' || prior === 'absent') ? prior : 'absent'; // marker never stores '1'
+    restoreMacDock(); // restores to prior + clears the marker
+  } catch (e) {}
 }
 
 function macWallpaperAvailable() {
@@ -1170,7 +1280,7 @@ function sendMacWallpaperModeState() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     try {
       mainWindow.webContents.send('mineradio-wallpaper-mode', {
-        active: macWallpaperActive, browsing: macBrowsingActive,
+        active: macWallpaperActive, browsing: macBrowsingActive, interacting: macInteractActive,
       });
     } catch (e) {}
   }
@@ -1210,19 +1320,57 @@ function sendMacHudState() {
   if (!macWallpaperHud || macWallpaperHud.isDestroyed()) return;
   try {
     macWallpaperHud.webContents.send('mineradio-wallpaper-hud-state', {
-      active: macWallpaperActive, browsing: macBrowsingActive,
+      active: macWallpaperActive, browsing: macBrowsingActive, interacting: macInteractActive,
     });
   } catch (e) {}
 }
 
 // Move the control pill by (dx,dy), clamped on-screen, remembering the new spot. Called
 // by the page's drag (via IPC) and directly by the self-test.
+// Snap the pill to a screen edge when it's dragged within SNAP px of one — so it parks
+// cleanly against the edge instead of floating a few pixels off.
+const HUD_SNAP = 24;
+function snapHudToEdges(x, y, w, h) {
+  const area = screen.getDisplayMatching({ x, y, width: w, height: h }).workArea;
+  let sx = x, sy = y;
+  if (Math.abs(x - area.x) <= HUD_SNAP) sx = area.x;
+  else if (Math.abs((area.x + area.width) - (x + w)) <= HUD_SNAP) sx = area.x + area.width - w;
+  if (Math.abs(y - area.y) <= HUD_SNAP) sy = area.y;
+  else if (Math.abs((area.y + area.height) - (y + h)) <= HUD_SNAP) sy = area.y + area.height - h;
+  return { x: Math.round(sx), y: Math.round(sy) };
+}
+
+// Persist the pill position across app restarts (the "记忆位置" the user asked for).
+function macHudPosFile() { try { return path.join(app.getPath('userData'), 'wallpaper-hud-pos.json'); } catch (e) { return null; } }
+let macHudPosSaveTimer = null;
+function persistMacHudPos() {
+  const f = macHudPosFile();
+  if (!f || !macWallpaperHudUserBounds) return;
+  if (macHudPosSaveTimer) clearTimeout(macHudPosSaveTimer);
+  macHudPosSaveTimer = setTimeout(() => {
+    macHudPosSaveTimer = null;
+    try { fs.writeFileSync(f, JSON.stringify(macWallpaperHudUserBounds)); } catch (e) {}
+  }, 400);
+}
+function loadMacHudPos() {
+  const f = macHudPosFile();
+  if (!f) return;
+  try {
+    if (!fs.existsSync(f)) return;
+    const o = JSON.parse(fs.readFileSync(f, 'utf8'));
+    if (o && Number.isFinite(o.x) && Number.isFinite(o.y)) macWallpaperHudUserBounds = { x: o.x, y: o.y };
+  } catch (e) {}
+}
+
 function moveMacHudBy(dx, dy) {
   if (!macWallpaperHud || macWallpaperHud.isDestroyed()) return false;
   const b = macWallpaperHud.getBounds();
-  const next = clampHudToDisplay(b.x + clampNumber(dx, -400, 400, 0), b.y + clampNumber(dy, -400, 400, 0), b.width, b.height);
+  const raw = clampHudToDisplay(b.x + clampNumber(dx, -400, 400, 0), b.y + clampNumber(dy, -400, 400, 0), b.width, b.height);
+  const snapped = snapHudToEdges(raw.x, raw.y, b.width, b.height);
+  const next = clampHudToDisplay(snapped.x, snapped.y, b.width, b.height);
   macWallpaperHud.setBounds(next, false);
   macWallpaperHudUserBounds = { x: next.x, y: next.y };
+  persistMacHudPos();
   return true;
 }
 
@@ -1328,37 +1476,23 @@ function destroyMacWallpaperHud() {
 // mode (the power-event handlers gate on macWallpaperActive).
 function setWallpaperPowerIdle(on, reason) {
   on = !!on;
+  macWallpaperPowerIdle = on;
   lastWallpaperPowerState = { idle: on, reason: reason || '' };
   if (mainWindow && !mainWindow.isDestroyed()) {
     try { mainWindow.webContents.send('mineradio-wallpaper-power', { idle: on, reason: reason || '' }); } catch (e) {}
   }
 }
 
-// Tracks whether the screen is currently locked, so a `resume` (wake) that fires
-// while still locked re-asserts idle instead of resuming the visualizer behind the
-// lock screen. Updated only by the power-signal handlers below.
-let macWallpaperScreenLocked = false;
-
 function registerMacWallpaperPowerSignals() {
   if (process.platform !== 'darwin') return;
-  // "Provably unseen" → idle. The decision (incl. resume-while-locked) lives in the
-  // pure, unit-tested macWallpaperPowerTransition; here we wire it to the real events.
-  // SET-true is only meaningful in wallpaper mode (otherwise the normal window's own
-  // visibility/minimize logic governs throttling), so we gate it on macWallpaperActive;
-  // CLEAR (false) is always safe to apply.
-  const handle = (event) => () => {
-    const next = macWallpaperPowerTransition(event, macWallpaperScreenLocked);
-    macWallpaperScreenLocked = next.screenLocked;
-    if (next.idle === true) {
-      if (macWallpaperActive) setWallpaperPowerIdle(true, event);
-    } else if (next.idle === false) {
-      setWallpaperPowerIdle(false, event);
-    }
-  };
-  try { powerMonitor.on('lock-screen', handle('lock-screen')); } catch (e) {}
-  try { powerMonitor.on('unlock-screen', handle('unlock-screen')); } catch (e) {}
-  try { powerMonitor.on('suspend', handle('suspend')); } catch (e) {}
-  try { powerMonitor.on('resume', handle('resume')); } catch (e) {}
+  // "Provably unseen" → idle. Only while in wallpaper mode (otherwise the normal window's
+  // own visibility/minimize logic already governs throttling).
+  const idleIfWallpaper = (reason) => () => { if (macWallpaperActive) setWallpaperPowerIdle(true, reason); };
+  const resume = (reason) => () => setWallpaperPowerIdle(false, reason);
+  try { powerMonitor.on('lock-screen', idleIfWallpaper('lock-screen')); } catch (e) {}
+  try { powerMonitor.on('unlock-screen', resume('unlock-screen')); } catch (e) {}
+  try { powerMonitor.on('suspend', idleIfWallpaper('suspend')); } catch (e) {}
+  try { powerMonitor.on('resume', resume('resume')); } catch (e) {}
 }
 
 function enterMacWallpaperMode() {
@@ -1403,6 +1537,8 @@ function enterMacWallpaperMode() {
     } else {
       goFullBleed();
     }
+    macSetDockAutohide(true);          // clear the Dock off the wallpaper (shows on mouse-approach)
+    applyMacInPlaceInteract(true);     // interactive BY DEFAULT — click the wallpaper directly
     updateMacWallpaperMenu();
     sendMacWallpaperModeState();
     return true;
@@ -1415,6 +1551,16 @@ function enterMacWallpaperMode() {
 }
 
 function exitMacWallpaperMode() {
+  // Stop the click-forwarding tap and put the Dock back the way we found it.
+  try { macEventTap.stop(); } catch (e) {}
+  // Drop any coalesced drag still queued so a stale timer can't fire post-exit (guards already
+  // make it a no-op; clearing is the clean belt-and-suspenders).
+  if (macWallpaperDragTimer) { clearTimeout(macWallpaperDragTimer); macWallpaperDragTimer = null; }
+  pendingMacWallpaperDrag = null;
+  macInteractActive = false;
+  restoreMacDock();
+  // Defensive: if an OLDER build left icons hidden, restore them (no-op normally).
+  if (macDesktopIcons.isHidden()) { try { macDesktopIcons.show(); } catch (e) {} }
   if (!mainWindow || mainWindow.isDestroyed()) {
     macWallpaperActive = false; macBrowsingActive = false; macWallpaperSaved = null;
     return;
@@ -1453,11 +1599,100 @@ function exitMacWallpaperMode() {
 function setMacBrowsingMode(on) {
   if (!macWallpaperActive) return false;
   macBrowsingActive = !!on;
-  if (macBrowsingActive) applyMacBrowsingLevel();
-  else applyMacAmbientLevel();
+  if (macBrowsingActive) {
+    // Raised to the front = a normal interactive window; the forwarding tap is redundant there,
+    // so pause it (it resumes when we drop back to ambient if interact is still on).
+    try { macEventTap.stop(); } catch (e) {}
+    applyMacBrowsingLevel();
+  } else {
+    applyMacAmbientLevel();
+    if (macInteractActive && macEventTap.isAvailable()) { try { macEventTap.start(forwardMacWallpaperMouse); } catch (e) {} }
+  }
   updateMacWallpaperMenu();
   sendMacWallpaperModeState();
   return true;
+}
+
+// Forward a desktop click (seen by the listen-only mouse tap) into the wallpaper renderer. macOS
+// sends empty-desktop clicks to Finder, not to our behind-icons window, so we inject them directly
+// via sendInputEvent. Screen point → window-content point (full-bleed window at its origin). Only
+// called for points the tap already判定为裸桌面 (no app/Dock/widget/pill on top), so clicking your
+// apps or the control pill is never hijacked. The window stays ambient (behind icons, click-through);
+// icons are never touched.
+// C4: coalesce high-frequency drag forwarding. macOS emits dragged events well above frame rate;
+// forwarding each as its own sendInputEvent floods the main→renderer IPC and competes with rAF (jank).
+// Keep only the LATEST drag position and flush at ~display rate; down/up/scroll stay immediate (and
+// flush any pending drag first, so event order + the final pre-release position are preserved). The
+// renderer's rotation delta telescopes (it uses clientX − orbit.last), so coalescing N moves into one
+// yields the same total rotation; click-to-play raycasts the discrete up-event coords, which are never
+// coalesced — so the landing point stays exact.
+let pendingMacWallpaperDrag = null;
+let macWallpaperDragTimer = null;
+const MAC_WALLPAPER_DRAG_FLUSH_MS = 16;
+function flushPendingMacWallpaperDrag() {
+  if (macWallpaperDragTimer) { clearTimeout(macWallpaperDragTimer); macWallpaperDragTimer = null; }
+  if (!pendingMacWallpaperDrag) return;
+  const d = pendingMacWallpaperDrag; pendingMacWallpaperDrag = null;
+  if (macBrowsingActive) return; // tap paused for browsing → drop a stale queued move (window is raised/native)
+  sendMacWallpaperMouseEvent(d);
+}
+function forwardMacWallpaperMouse(evt) {
+  if (!macWallpaperActive || !macInteractActive || !mainWindow || mainWindow.isDestroyed()) return;
+  if (evt.kind === 'drag') {
+    pendingMacWallpaperDrag = evt; // overwrite → only the most recent position survives
+    if (!macWallpaperDragTimer) macWallpaperDragTimer = setTimeout(flushPendingMacWallpaperDrag, MAC_WALLPAPER_DRAG_FLUSH_MS);
+    return;
+  }
+  flushPendingMacWallpaperDrag(); // discrete event: emit any pending move first (order + final pos)
+  sendMacWallpaperMouseEvent(evt);
+}
+// Inject a (screen-space) desktop mouse event into the wallpaper renderer. macOS sends empty-desktop
+// clicks to Finder, not to our behind-icons window, so we inject them directly via sendInputEvent.
+// Screen point → window-content point (full-bleed window at its origin). Only called for points the
+// tap already判定为裸桌面 (no app/Dock/widget/pill on top), so clicking your apps or the control pill
+// is never hijacked. The window stays ambient (behind icons, click-through); icons are never touched.
+function sendMacWallpaperMouseEvent(evt) {
+  if (!macWallpaperActive || !macInteractActive || !mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const b = mainWindow.getBounds();
+    const x = Math.round(evt.x - b.x), y = Math.round(evt.y - b.y);
+    // Opt-in verification log (off for normal .app users; set MINERADIO_TAP_LOG=1 when launching
+    // from a terminal to confirm the tap→detect→forward chain fires live). 'drag'/move are skipped
+    // to avoid flooding; the discrete actions are enough to prove a forwarded click landed.
+    if (process.env.MINERADIO_TAP_LOG && evt.kind !== 'drag' && evt.kind !== 'move') console.log('[tap-forward]', evt.kind, x, y);
+    const wc = mainWindow.webContents;
+    if (evt.kind === 'down') wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    else if (evt.kind === 'drag' || evt.kind === 'move') wc.sendInputEvent({ type: 'mouseMove', x, y });
+    else if (evt.kind === 'up') wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    else if (evt.kind === 'rdown') wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'right', clickCount: 1 });
+    else if (evt.kind === 'rup') wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'right', clickCount: 1 });
+    else if (evt.kind === 'scroll') wc.sendInputEvent({ type: 'mouseWheel', x, y, deltaX: (evt.dx || 0) * 16, deltaY: (evt.dy || 0) * 16, canScroll: true });
+  } catch (e) {}
+}
+
+// Toggle "click the wallpaper directly" (default ON in wallpaper mode). Starts/stops the listen-only
+// mouse tap. Needs a one-time Input Monitoring grant; until then it no-ops gracefully and points the
+// user at System Settings. Icons stay visible the whole time; the window never comes forward.
+function applyMacInPlaceInteract(on) {
+  if (!macWallpaperActive || !mainWindow || mainWindow.isDestroyed()) return false;
+  macInteractActive = !!on;
+  if (macInteractActive) {
+    if (macEventTap.isAvailable() && !macEventTap.hasPermission() && !macWallpaperTestMode()) {
+      try { macEventTap.requestPermission(); } catch (e) {}   // surface the macOS Input Monitoring prompt
+      notifyMac('开启“直接点壁纸”：系统设置 → 隐私与安全性 → 输入监控 → 勾选 Mineradio，然后重开壁纸');
+    }
+    if (macEventTap.isAvailable() && !macWallpaperTestMode()) { try { macEventTap.start(forwardMacWallpaperMouse); } catch (e) {} }
+  } else {
+    try { macEventTap.stop(); } catch (e) {}
+  }
+  updateMacWallpaperMenu();
+  sendMacWallpaperModeState();
+  return true;
+}
+
+function toggleMacInteract() {
+  if (!macWallpaperActive) { notifyMac('请先进入壁纸模式 (⌥⌘W)'); return; }
+  applyMacInPlaceInteract(!macInteractActive);
 }
 
 function toggleMacWallpaperMode() {
@@ -1471,23 +1706,17 @@ function toggleMacBrowsingMode() {
 }
 
 function buildMacAppMenu() {
+  // 壁纸子菜单镜像 Tray: 进入/退出"沉到桌面图标层"的真壁纸 + 原地互动 + 前置浏览。
+  // 原生全屏(与壁纸不同的另一种模式)由标准 windowMenu「进入全屏 ⌃⌘F」提供, 不在此重复。
   const wallpaperSubmenu = {
     label: '壁纸',
     submenu: [
-      {
-        label: macWallpaperActive ? '退出壁纸模式' : '进入壁纸模式',
-        accelerator: 'Alt+Cmd+W',
-        enabled: macWallpaperAvailable(),
-        click: () => toggleMacWallpaperMode(),
-      },
-      {
-        label: '浏览模式（可交互）',
-        type: 'checkbox',
-        checked: macBrowsingActive,
-        enabled: macWallpaperActive,
-        accelerator: 'Alt+Cmd+B',
-        click: () => toggleMacBrowsingMode(),
-      },
+      { label: macWallpaperActive ? '退出壁纸模式' : '进入壁纸模式', accelerator: 'Alt+Cmd+W',
+        enabled: macWallpaperAvailable() || macWallpaperActive, click: () => toggleMacWallpaperMode() },
+      { label: '原地互动（直接点壁纸 · 图标保留）', type: 'checkbox', checked: macInteractActive,
+        enabled: macWallpaperActive, accelerator: 'Alt+Cmd+B', click: () => toggleMacInteract() },
+      { label: '前置浏览（窗口置顶 · 完整操作）', type: 'checkbox', checked: macBrowsingActive,
+        enabled: macWallpaperActive, click: () => toggleMacBrowsingMode() },
     ],
   };
   return Menu.buildFromTemplate([
@@ -1509,7 +1738,6 @@ function registerMacWallpaperShortcuts() {
   // Must be GLOBAL: in ambient mode the desktop-level window can't take key events,
   // so a focused-only menu accelerator would never fire there.
   try { globalShortcut.register('Alt+Cmd+W', () => toggleMacWallpaperMode()); } catch (e) {}
-  try { globalShortcut.register('Alt+Cmd+B', () => toggleMacBrowsingMode()); } catch (e) {}
 }
 
 // Menu-bar tray: always reachable even when the app is sunk behind the icons, so the
@@ -1520,14 +1748,15 @@ function buildMacTrayMenu() {
   return Menu.buildFromTemplate([
     { label: macWallpaperActive ? '退出壁纸模式' : '进入壁纸模式', accelerator: 'Alt+Cmd+W',
       enabled: macWallpaperAvailable() || macWallpaperActive, click: () => toggleMacWallpaperMode() },
-    { label: '浏览模式（前置 · 可完整操作）', type: 'checkbox', checked: macBrowsingActive,
-      enabled: macWallpaperActive, accelerator: 'Alt+Cmd+B', click: () => toggleMacBrowsingMode() },
+    { label: '原地互动（直接点壁纸 · 图标保留）', type: 'checkbox', checked: macInteractActive,
+      enabled: macWallpaperActive, accelerator: 'Alt+Cmd+B', click: () => toggleMacInteract() },
+    { label: '前置浏览（窗口置顶 · 完整操作）', type: 'checkbox', checked: macBrowsingActive,
+      enabled: macWallpaperActive, click: () => toggleMacBrowsingMode() },
     { type: 'separator' },
     { label: '上一首', click: () => sendGlobalHotkeyAction('prevTrack') },
     { label: '播放 / 暂停', click: () => sendGlobalHotkeyAction('togglePlay') },
     { label: '下一首', click: () => sendGlobalHotkeyAction('nextTrack') },
     { type: 'separator' },
-    { label: '前置主窗口（完整操作）', click: () => { if (macWallpaperActive) setMacBrowsingMode(true); else focusMainWindow(); } },
     { label: '退出 Mineradio', role: 'quit' },
   ]);
 }
@@ -1563,6 +1792,9 @@ function destroyMacTray() {
 // Env-guarded integration self-test (no production impact). Exercises the REAL
 // enter/browsing/exit code path and asserts NSWindow.level transitions + capturePage.
 async function runMacWallpaperSelfTest() {
+  // Never relaunch the REAL Finder during an automated self-test — exercise the icon
+  // state machine (marker + hidden flag) only.
+  process.env.MINERADIO_ICONS_DRYRUN = '1';
   const out = process.env.MINERADIO_WALLPAPER_SELFTEST_OUT || '/tmp/mineradio-wallpaper-selftest.json';
   setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 'selftest hard timeout'); } catch (e) {} process.exit(3); }, 60000);
   const r = { steps: [] };
@@ -1620,6 +1852,34 @@ async function runMacWallpaperSelfTest() {
       r.hudNowPlayingOk = !!(np && np.title === '光年之外' && np.playing === true && np.cover === cover);
     } catch (e) { r.hudNowPlayingErr = e.message; }
     stage("nowplaying");
+    // --- Interactive-by-default tap path. The tap needs Input Monitoring (absent headlessly), so we
+    //     verify the STATE MACHINE + that the FFI module loads + the window stays AMBIENT (behind icons,
+    //     desktop level — interact never changes the level; clicks come via the tap). Icons are never
+    //     touched. enterMacWallpaperMode already turned interact on by default. ---
+    r.eventTapAvailable = macEventTap.isAvailable();
+    r.interactDefaultOn = (macInteractActive === true);   // on by default after enter
+    r.levelDuringInteract = macWindowLevel.getLevel(mainWindow); // stays ambient/desktop level
+    applyMacInPlaceInteract(false);
+    r.interactOff = macInteractActive;                    // STATE flag flips off
+    applyMacInPlaceInteract(true);
+    r.interactBackOn = macInteractActive;                 // and back on
+    r.iconsNeverHidden = (macDesktopIcons.isHidden() === false); // regression guard: interact must never hide icons
+    // REAL tap start/stop proof. applyMacInPlaceInteract's tap-start is testMode-gated (so the
+    // Input-Monitoring prompt never pops headlessly), which would make a tap assertion routed through
+    // it vacuous — so drive the module DIRECTLY here. Needs Input Monitoring; honestly SKIPPED (not a
+    // silent pass) when the grant is absent, so CI without the grant doesn't masquerade as a proof.
+    if (macEventTap.isAvailable() && macEventTap.hasPermission()) {
+      const started = macEventTap.start(() => {});
+      r.tapStartsWithPermission = (started === true && macEventTap.isRunning() === true);
+      macEventTap.stop();
+      r.tapStopsClean = (macEventTap.isRunning() === false);
+      r.tapProof = 'exercised';
+    } else {
+      r.tapProof = 'skipped-no-input-monitoring';
+      r.tapStartsWithPermission = null;
+      r.tapStopsClean = null;
+    }
+    stage("interact");
     stage("beforeBrowsing");
     setMacBrowsingMode(true);
     await new Promise((res) => setTimeout(res, 250));
@@ -1646,7 +1906,14 @@ async function runMacWallpaperSelfTest() {
       && r.powerIdleBroadcastOff === true
       && r.hudNowPlayingOk === true
       && r.winFillsPrimary === true
-      && r.hudMoved === true;
+      && r.hudMoved === true
+      && r.eventTapAvailable === true
+      && r.interactDefaultOn === true
+      && r.levelDuringInteract === macWindowLevel.desktopLevel()
+      && r.interactOff === false
+      && r.interactBackOn === true
+      && r.iconsNeverHidden === true
+      && (r.tapProof !== 'exercised' || (r.tapStartsWithPermission === true && r.tapStopsClean === true));
   } catch (e) {
     r.error = e.message; r.stack = e.stack; r.PASS = false;
   }
@@ -1671,11 +1938,102 @@ async function runMacWallpaperHoldTest() {
   if (process.env.MINERADIO_WALLPAPER_HOLD_QUIT !== '0') setTimeout(() => app.quit(), 200);
 }
 
-// NOTE: the env-guarded measurement probes (occlusion / fullscreen / capture) were
-// removed once their questions were settled and baked into the code (occlusion is
-// unreliable for desktop-level windows; the window fills the primary display via
-// simple-fullscreen; capturePage works). The integration self-test
-// (runMacWallpaperSelfTest) remains as the live regression guard. History: git.
+// Env-guarded MEASUREMENT (no production impact): does AppKit report a reliable
+// occlusionState for the all-spaces / desktop-level wallpaper window when it is fully
+// covered? This is the linchpin open question for the energy controller — measure
+// before building it. Enters ambient, reads occlusion, covers the screen with an
+// opaque normal-level window, re-reads, uncovers, re-reads; writes a verdict JSON.
+async function runMacOcclusionProbe() {
+  const out = process.env.MINERADIO_OCCLUSION_OUT || '/tmp/mineradio-occlusion-probe.json';
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 'occlusion probe timeout'); } catch (e) {} process.exit(3); }, 20000);
+  const r = {};
+  let cover = null;
+  try {
+    enterMacWallpaperMode();
+    await sleep(600);
+    r.ambientLevel = macWindowLevel.getLevel(mainWindow);
+    r.occ_before = macWindowLevel.getOcclusionState(mainWindow);
+    r.visible_before = macWindowLevel.isVisibleByOcclusion(mainWindow);
+    const b = screen.getPrimaryDisplay().bounds;
+    cover = new BrowserWindow({ x: b.x, y: b.y, width: b.width, height: b.height, frame: false, backgroundColor: '#101010', hasShadow: false, skipTaskbar: true, show: false });
+    cover.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height }, false);
+    cover.show();
+    cover.focus();
+    await sleep(1100);
+    r.occ_covered = macWindowLevel.getOcclusionState(mainWindow);
+    r.visible_covered = macWindowLevel.isVisibleByOcclusion(mainWindow);
+    if (cover && !cover.isDestroyed()) cover.close();
+    cover = null;
+    await sleep(800);
+    r.occ_after = macWindowLevel.getOcclusionState(mainWindow);
+    r.visible_after = macWindowLevel.isVisibleByOcclusion(mainWindow);
+    r.RELIABLE = (r.visible_before === true && r.visible_covered === false && r.visible_after === true);
+  } catch (e) {
+    r.error = e.message; r.stack = e.stack;
+  }
+  try { if (cover && !cover.isDestroyed()) cover.close(); } catch (e) {}
+  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
+  setTimeout(() => app.quit(), 200);
+}
+
+// Env-guarded diagnostic: does the wallpaper window actually cover the full screen, and
+// does the renderer fill it? Reports displays + window bounds + renderer viewport/canvas.
+async function runMacFullscreenProbe() {
+  const out = process.env.MINERADIO_FULLSCREEN_OUT || '/tmp/mineradio-fullscreen-probe.json';
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 't'); } catch (e) {} process.exit(3); }, 20000);
+  const r = {};
+  try {
+    r.displays = screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor, internal: d.internal }));
+    r.primary = screen.getPrimaryDisplay().bounds;
+    enterMacWallpaperMode();
+    await sleep(700);
+    r.winBounds = mainWindow.getBounds();
+    r.winFillsPrimary = JSON.stringify(r.winBounds) === JSON.stringify(r.primary);
+    r.renderer = await mainWindow.webContents.executeJavaScript('({iw:innerWidth, ih:innerHeight, dpr:window.devicePixelRatio, cw:((document.querySelector("canvas")||{}).width)||0, ch:((document.querySelector("canvas")||{}).height)||0})');
+    // --- candidate fix: Electron setSimpleFullScreen (covers menu-bar/dock zones) ---
+    mainWindow.setSimpleFullScreen(true);
+    await sleep(600);
+    r.isSimpleFS = mainWindow.isSimpleFullScreen();
+    // setSimpleFullScreen may reset level/space/click-through → re-assert ambient.
+    macWindowLevel.setLevel(mainWindow, macWindowLevel.desktopLevel());
+    try { mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (e) {}
+    try { mainWindow.setIgnoreMouseEvents(true, { forward: true }); } catch (e) {}
+    await sleep(400);
+    r.winBoundsAfter = mainWindow.getBounds();
+    r.winFillsPrimaryAfter = JSON.stringify(r.winBoundsAfter) === JSON.stringify(r.primary);
+    r.levelAfter = macWindowLevel.getLevel(mainWindow);
+    r.rendererAfter = await mainWindow.webContents.executeJavaScript('({iw:innerWidth, ih:innerHeight})');
+    mainWindow.setSimpleFullScreen(false);
+    exitMacWallpaperMode();
+  } catch (e) { r.error = e.message; r.stack = e.stack; }
+  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
+  setTimeout(() => app.quit(), 200);
+}
+
+// Env-guarded: does the full-bleed (simple-fullscreen + desktop-level) main window
+// actually render, or does capturePage hang / come back blank? Timeout-guarded.
+async function runMacCaptureProbe() {
+  const out = process.env.MINERADIO_CAPTURE_OUT || '/tmp/mineradio-capture-probe.json';
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  setTimeout(() => { try { require('fs').writeFileSync(out + '.timeout', 't'); } catch (e) {} process.exit(3); }, 16000);
+  const r = {};
+  try {
+    enterMacWallpaperMode();
+    await sleep(900);
+    r.winBounds = mainWindow.getBounds();
+    const cap = await Promise.race([
+      mainWindow.webContents.capturePage().then((img) => ({ png: img.toPNG() })),
+      sleep(5000).then(() => ({ timeout: true })),
+    ]);
+    if (cap.timeout) r.captureTimedOut = true;
+    else { require('fs').writeFileSync(out.replace(/\.json$/, '') + '.png', cap.png); r.captureBytes = cap.png.length; }
+    exitMacWallpaperMode();
+  } catch (e) { r.error = e.message; r.stack = e.stack; }
+  try { require('fs').writeFileSync(out, JSON.stringify(r, null, 2)); } catch (e) {}
+  setTimeout(() => app.quit(), 200);
+}
 
 function closeOverlayWindows() {
   closeDesktopLyricsWindow();
@@ -1916,19 +2274,19 @@ ipcMain.handle('mineradio-wallpaper-update', async (_event, payload) => {
 // returns available:false elsewhere so the UI can hide/disable the control.
 ipcMain.handle('mineradio-mac-wallpaper-state', () => ({
   ok: true, platform: process.platform, available: macWallpaperAvailable(),
-  active: macWallpaperActive, browsing: macBrowsingActive,
+  active: macWallpaperActive, browsing: macBrowsingActive, interacting: macInteractActive,
 }));
 ipcMain.handle('mineradio-mac-wallpaper-toggle', () => {
-  toggleMacWallpaperMode();
-  return { ok: true, available: macWallpaperAvailable(), active: macWallpaperActive, browsing: macBrowsingActive };
+  toggleMacWallpaperMode(); // 壁纸按钮 = 沉到桌面图标层的真壁纸 (与原生全屏区分)
+  return { ok: true, available: macWallpaperAvailable(), active: macWallpaperActive, browsing: macBrowsingActive, interacting: macInteractActive };
 });
 ipcMain.handle('mineradio-mac-wallpaper-set', (_e, enabled) => {
   if (enabled) enterMacWallpaperMode(); else exitMacWallpaperMode();
-  return { ok: true, available: macWallpaperAvailable(), active: macWallpaperActive, browsing: macBrowsingActive };
+  return { ok: true, available: macWallpaperAvailable(), active: macWallpaperActive, browsing: macBrowsingActive, interacting: macInteractActive };
 });
 ipcMain.handle('mineradio-mac-browsing-toggle', () => {
   toggleMacBrowsingMode();
-  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive };
+  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive, interacting: macInteractActive };
 });
 // Wallpaper control-pill (HUD) surface. Transport actions reuse the same global-hotkey
 // path the tray uses; mode toggles reuse the existing wallpaper functions.
@@ -1939,14 +2297,18 @@ ipcMain.handle('mineradio-wallpaper-hud-action', (_e, action) => {
   sendGlobalHotkeyAction(name);
   return { ok: true };
 });
+// HUD globe = the PRIMARY toggle for "click the wallpaper directly" (the listen-only forwarding
+// tap). The channel name is kept for renderer compatibility.
 ipcMain.handle('mineradio-wallpaper-hud-browsing-toggle', () => {
-  toggleMacBrowsingMode();
-  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive };
+  toggleMacInteract();
+  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive, interacting: macInteractActive };
 });
 ipcMain.handle('mineradio-wallpaper-hud-exit', () => {
   exitMacWallpaperMode();
-  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive };
+  return { ok: true, active: macWallpaperActive, browsing: macBrowsingActive, interacting: macInteractActive };
 });
+// (Kept for renderer compatibility; no longer drives an idle timer.)
+ipcMain.handle('mineradio-wallpaper-interact-ping', () => ({ ok: true }));
 // Drag the control pill anywhere on the desktop. The window is non-activating so
 // -webkit-app-region:drag is unreliable; the page reports deltas and we move + clamp here.
 ipcMain.handle('mineradio-wallpaper-hud-move-by', (_e, dx, dy) => ({ ok: moveMacHudBy(dx, dy) }));
@@ -2066,7 +2428,12 @@ async function createWindow() {
     }
     closeOverlayWindows();
     // If the window is closed mid-wallpaper-mode, clear the mac wallpaper state so a
-    // dock-reopened fresh (normal) window doesn't inherit stale active/browsing flags.
+    // dock-reopened fresh (normal) window doesn't inherit stale active/browsing flags —
+    // and stop the forwarding tap + restore the Dock.
+    try { macEventTap.stop(); } catch (e) {}
+    restoreMacDock();
+    if (macDesktopIcons.isHidden()) { try { macDesktopIcons.show(); } catch (e) {} } // defensive (old builds)
+    macInteractActive = false;
     macWallpaperActive = false;
     macBrowsingActive = false;
     macWallpaperSaved = null;
@@ -2119,6 +2486,16 @@ if (!gotSingleInstanceLock) {
       updateMacWallpaperMenu();
       registerMacWallpaperShortcuts();
       registerMacWallpaperPowerSignals();
+      // Crash-safety: if a previous session died while in-place interact had the desktop icons
+      // hidden, a marker file survives — restore the icons now so the user never opens to a
+      // stranded icon-free desktop.
+      try {
+        macDesktopIcons.configure(app.getPath('userData'));
+        macDesktopIcons.recoverIfStranded();
+        configureMacDockRecovery(app.getPath('userData'));
+        macDockRecoverIfStranded(); // restore a Dock left auto-hidden by a previous crash
+        loadMacHudPos(); // restore where the user last parked the control pill
+      } catch (e) {}
     }
     // Re-fitting the macOS wallpaper on display-metrics-changed must NOT toggle simple-
     // fullscreen unconditionally: setSimpleFullScreen(false);true itself changes the screen's
@@ -2146,7 +2523,8 @@ if (!gotSingleInstanceLock) {
             // Only toggle when the window actually no longer covers the display (a real
             // resolution / arrangement change) — never for a no-op metrics change.
             if (!fits) { mainWindow.setSimpleFullScreen(false); mainWindow.setSimpleFullScreen(true); }
-            if (macBrowsingActive) applyMacBrowsingLevel(); else applyMacAmbientLevel();
+            if (macBrowsingActive) applyMacBrowsingLevel();
+            else applyMacAmbientLevel(); // interact is the tap, not a window level — nothing to re-assert
             positionMacWallpaperHud();
           } catch (e) {}
           setTimeout(() => { macDmRefitting = false; }, 600); // release after the toggle's events flush
@@ -2159,6 +2537,9 @@ if (!gotSingleInstanceLock) {
     await createWindow();
     if (process.env.MINERADIO_WALLPAPER_SELFTEST === '1') runMacWallpaperSelfTest();
     else if (process.env.MINERADIO_WALLPAPER_HOLDTEST === '1') runMacWallpaperHoldTest();
+    else if (process.env.MINERADIO_OCCLUSION_PROBE === '1') runMacOcclusionProbe();
+    else if (process.env.MINERADIO_FULLSCREEN_PROBE === '1') runMacFullscreenProbe();
+    else if (process.env.MINERADIO_CAPTURE_PROBE === '1') runMacCaptureProbe();
   });
 
   app.on('activate', () => {
@@ -2172,6 +2553,9 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('before-quit', () => {
+    try { macEventTap.stop(); } catch (e) {}
+    restoreMacDockSync(); // put the Dock back synchronously before the process can exit
+    try { macDesktopIcons.showSync(); } catch (e) {} // defensive: restore icons if an old build hid them
     try { exitMacWallpaperMode(); } catch (e) {}
     unregisterMineradioGlobalHotkeys();
     try { globalShortcut.unregisterAll(); } catch (e) {}
